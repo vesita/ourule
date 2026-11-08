@@ -1,4 +1,4 @@
-//! M1 内核：Match 状态、回合游标、纯函数 step、事件流、只读投影。
+//! M1/M2 内核：Match 状态、Family 分派、回合游标、纯函数 step、事件流、只读投影。
 
 use std::collections::BTreeMap;
 
@@ -160,27 +160,32 @@ impl Match {
         if !(2..=8).contains(&seats) {
             return Err(RuleError::BadSeats(format!("必须是 2–8，拿到 {seats}")));
         }
-        let family = match definition.family() {
-            FamilyDefinition::Duel(_) => FamilyState::Duel,
-            FamilyDefinition::Board(board) => FamilyState::Board(BoardState {
-                cells: vec![None; board.rows.saturating_mul(board.cols)],
-            }),
+        let (family, resources) = match definition.family() {
+            FamilyDefinition::Duel(duel) => {
+                let mut resources = BTreeMap::new();
+                for (name, resource) in &duel.resources {
+                    let values = match resource.per {
+                        Per::Player => Values::Player(
+                            (0..seats).map(|_| clamp(resource, resource.init)).collect(),
+                        ),
+                        Per::Game => Values::Game(clamp(resource, resource.init)),
+                        Per::Team => {
+                            return Err(RuleError::Definition(DefinitionError(
+                                "M2 不支持 per team 资源".to_string(),
+                            )));
+                        }
+                    };
+                    resources.insert(name.clone(), values);
+                }
+                (FamilyState::Duel, resources)
+            }
+            FamilyDefinition::Board(board) => (
+                FamilyState::Board(BoardState {
+                    cells: vec![None; board.rows.saturating_mul(board.cols)],
+                }),
+                BTreeMap::new(),
+            ),
         };
-        let mut resources = BTreeMap::new();
-        for (name, resource) in &definition.resources {
-            let values = match resource.per {
-                Per::Player => {
-                    Values::Player((0..seats).map(|_| clamp(resource, resource.init)).collect())
-                }
-                Per::Game => Values::Game(clamp(resource, resource.init)),
-                Per::Team => {
-                    return Err(RuleError::Definition(DefinitionError(
-                        "M1 不支持 per team 资源".to_string(),
-                    )));
-                }
-            };
-            resources.insert(name.clone(), values);
-        }
         let mut game = Self {
             definition,
             family,
@@ -198,7 +203,10 @@ impl Match {
             events: Vec::new(),
         };
         game.push_event(Visibility::Public, EventKind::MatchStarted { seats });
-        let start_effects = game.definition.trigger("start").to_vec();
+        let start_effects = game
+            .duel_definition()
+            .map(|duel| duel.trigger("start").to_vec())
+            .unwrap_or_default();
         game.apply_effects(&start_effects, None, None)?;
         if game.outcome.is_none() {
             game.push_event(
@@ -208,7 +216,10 @@ impl Match {
                     turn: game.turn,
                 },
             );
-            let turn_start = game.definition.trigger("turnStart").to_vec();
+            let turn_start = game
+                .duel_definition()
+                .map(|duel| duel.trigger("turnStart").to_vec())
+                .unwrap_or_default();
             game.apply_effects(&turn_start, None, None)?;
         }
         Ok(game)
@@ -259,7 +270,10 @@ impl Match {
             };
             return Ok(board_offers(board, board_state, self.active));
         }
-        for action in &self.definition.actions {
+        let duel = self
+            .duel_definition()
+            .ok_or_else(|| RuleError::Eval("Duel family state mismatch".to_string()))?;
+        for action in &duel.actions {
             let allowed = match &action.when {
                 None => true,
                 Some(when) => self.eval(when)?.as_bool()?,
@@ -294,8 +308,8 @@ impl Match {
             return self.step_board(action_id, target);
         }
         let action = self
-            .definition
-            .action(action_id)
+            .duel_definition()
+            .and_then(|duel| duel.action(action_id))
             .cloned()
             .ok_or_else(|| RuleError::UnknownAction(action_id.to_string()))?;
         if let Some(when) = &action.when
@@ -328,40 +342,21 @@ impl Match {
             self.check_wins(actor)?;
         }
         if self.outcome.is_none() {
-            let turn_end = self.definition.trigger("turnEnd").to_vec();
+            let turn_end = self
+                .duel_definition()
+                .map(|duel| duel.trigger("turnEnd").to_vec())
+                .unwrap_or_default();
             self.apply_effects(&turn_end, Some(actor), Some(&action.label))?;
-            self.push_event(Visibility::Public, EventKind::TurnEnded { seat: actor });
-            self.taken = self.taken.saturating_add(1);
-            if self.outcome.is_some() {
-                return Ok(());
-            }
-            self.advance_turn();
-            let limit = self
-                .definition
-                .max_turns
-                .saturating_mul(u32::try_from(self.seats).unwrap_or(u32::MAX));
-            if self.taken >= limit {
-                self.finish(OutcomeKind::Draw, None, "回合数用尽，平局".to_string());
-            } else {
-                self.push_event(
-                    Visibility::Public,
-                    EventKind::TurnStarted {
-                        seat: self.active,
-                        turn: self.turn,
-                    },
-                );
-                let turn_start = self.definition.trigger("turnStart").to_vec();
-                self.apply_effects(&turn_start, None, None)?;
-            }
+            self.complete_action(actor)?;
         }
         Ok(())
     }
 
     pub fn read(&self, perspective: Perspective) -> Result<ReadModel, RuleError> {
         let resources = self
-            .definition
-            .resources
-            .iter()
+            .duel_definition()
+            .into_iter()
+            .flat_map(|duel| duel.resources.iter())
             .map(|(name, resource)| {
                 let values = match self.resources.get(name) {
                     Some(Values::Player(values)) => values
@@ -543,33 +538,50 @@ impl Match {
                 format!("玩家{} 连成一线获胜", actor + 1),
             );
         }
-        if self.outcome.is_none() {
-            self.push_event(Visibility::Public, EventKind::TurnEnded { seat: actor });
-            self.taken = self.taken.saturating_add(1);
-            self.advance_turn();
-            let limit = self
-                .definition
-                .max_turns
-                .saturating_mul(u32::try_from(self.seats).unwrap_or(u32::MAX));
-            if self.taken >= limit {
-                self.finish(OutcomeKind::Draw, None, "回合数用尽，平局".to_string());
-            } else if board_full(&self.family) {
-                self.finish(OutcomeKind::Draw, None, "棋盘已满，平局".to_string());
-            } else {
-                self.push_event(
-                    Visibility::Public,
-                    EventKind::TurnStarted {
-                        seat: self.active,
-                        turn: self.turn,
-                    },
-                );
-            }
+        self.complete_action(actor)
+    }
+
+    /// Family 结算完成后统一收尾：记录回合结束、检查上限/Family 终止条件、推进游标。
+    fn complete_action(&mut self, actor: usize) -> Result<(), RuleError> {
+        if self.outcome.is_some() {
+            return Ok(());
+        }
+        self.push_event(Visibility::Public, EventKind::TurnEnded { seat: actor });
+        self.taken = self.taken.saturating_add(1);
+        if self.outcome.is_some() {
+            return Ok(());
+        }
+        self.advance_turn();
+        let limit = self
+            .definition
+            .max_turns
+            .saturating_mul(u32::try_from(self.seats).unwrap_or(u32::MAX));
+        if self.taken >= limit {
+            self.finish(OutcomeKind::Draw, None, "回合数用尽，平局".to_string());
+        } else if matches!(self.family, FamilyState::Board(_)) && board_full(&self.family) {
+            self.finish(OutcomeKind::Draw, None, "棋盘已满，平局".to_string());
+        } else {
+            self.push_event(
+                Visibility::Public,
+                EventKind::TurnStarted {
+                    seat: self.active,
+                    turn: self.turn,
+                },
+            );
+            let turn_start = self
+                .duel_definition()
+                .map(|duel| duel.trigger("turnStart").to_vec())
+                .unwrap_or_default();
+            self.apply_effects(&turn_start, None, None)?;
         }
         Ok(())
     }
 
     fn check_wins(&mut self, actor: usize) -> Result<(), RuleError> {
-        for win in &self.definition.wins {
+        let Some(duel) = self.duel_definition() else {
+            return Ok(());
+        };
+        for win in &duel.wins {
             if !self.eval(&win.when)?.as_bool()? {
                 continue;
             }
@@ -637,6 +649,13 @@ impl Match {
         text
     }
 
+    fn duel_definition(&self) -> Option<&crate::definition::DuelDefinition> {
+        match (self.definition.family(), &self.family) {
+            (FamilyDefinition::Duel(duel), FamilyState::Duel) => Some(duel),
+            _ => None,
+        }
+    }
+
     fn read_path(&self, path: &Path) -> Result<i64, RuleError> {
         match path.root {
             PathRoot::SelfSeat => self.player_value(self.active, &path.name),
@@ -662,8 +681,8 @@ impl Match {
         let (scope, name) = self.resolve_path(path)?;
         let previous = self.read_path(path)?;
         let resource = self
-            .definition
-            .resource(&name)
+            .duel_definition()
+            .and_then(|duel| duel.resource(&name))
             .ok_or_else(|| RuleError::Eval(format!("资源 `{name}` 不存在")))?;
         let visibility = match (resource.visibility, path.root) {
             (AstVisibility::Public, _) => Visibility::Public,
@@ -710,8 +729,8 @@ impl Match {
 
     fn clamp_path(&self, path: &Path, value: i64) -> Result<i64, RuleError> {
         let resource = self
-            .definition
-            .resource(&path.name)
+            .duel_definition()
+            .and_then(|duel| duel.resource(&path.name))
             .ok_or_else(|| RuleError::Eval(format!("资源 `{}` 不存在", path.name)))?;
         Ok(clamp(resource, value))
     }

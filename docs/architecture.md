@@ -16,6 +16,7 @@ Presentation    ReadModel + ViewSpec → 文本 / SVG / PNG
 
 约束：
 
+- `Definition` 只保留游戏名、座位数、回合上限和 `FamilyDefinition`；duel 专属 resources/actions/triggers/wins 放在 `DuelDefinition`，board 参数放在 `BoardDefinition`；
 - Kernel 通过封闭 `FamilyDefinition/FamilyState` 表达具体 family；通用 Match 回合壳只做游标、事件、Outcome、透视投影；
 - `ActionOffer` 与 `step` 使用通用 `ActionTarget`，目标细节属于 family；duel 无 target，board 的 place 使用 cell id；
 - family 不拥有换人/判和/回合推进；
@@ -58,7 +59,7 @@ MatchEnded
 
 - **M0（已完成）**：`.oru` 词法/语法/AST/检查器 + `Oru.toml` + `oru new/init/check`。
 - **M1（已完成）**：Definition/Match/Kernel，事件模型，顺序行动，duel 解释器，`oru run`。
-- **M2（当前/已落地）**：Family 枚举、ActionTarget、board 解释器；以第二种规则 family 验证共享内核。
+- **M2（当前/已落地）**：FamilyDefinition/FamilyState、ActionTarget、board 解释器；共享 `complete_action` 处理 TurnEnded/上限/游标，两个 family 共用同一收尾路径。
 - **M2.5**：事件回放、`oru test` 雏形、定义 hash/state version。
 - **M3**：card family、阶段机、同时行动；队伍/角色与私密行动。
 - **M4**：`oru fmt`、黄金回放、LSP。

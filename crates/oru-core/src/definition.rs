@@ -10,14 +10,12 @@ use oru_lang::ast::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
+/// Family 无关的对局元信息 + 一个封闭 Family 定义。
+/// Family 专属规则数据必须放在对应变体里，避免通用 Definition 变成多类型字段大杂烩。
 pub struct Definition {
     pub title: String,
     pub seats: usize,
     pub max_turns: u32,
-    pub resources: BTreeMap<String, ResourceDef>,
-    pub actions: Vec<ActionDef>,
-    pub triggers: BTreeMap<String, Vec<Effect>>,
-    pub wins: Vec<WinDef>,
     pub family: FamilyDefinition,
 }
 
@@ -27,10 +25,29 @@ pub enum FamilyDefinition {
     Board(BoardDefinition),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DuelDefinition;
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuelDefinition {
+    pub resources: BTreeMap<String, ResourceDef>,
+    pub actions: Vec<ActionDef>,
+    pub triggers: BTreeMap<String, Vec<Effect>>,
+    pub wins: Vec<WinDef>,
+}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl DuelDefinition {
+    pub fn resource(&self, name: &str) -> Option<&ResourceDef> {
+        self.resources.get(name)
+    }
+
+    pub fn action(&self, id: &str) -> Option<&ActionDef> {
+        self.actions.iter().find(|action| action.id == id)
+    }
+
+    pub fn trigger(&self, event: &str) -> &[Effect] {
+        self.triggers.get(event).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct BoardDefinition {
     pub rows: usize,
     pub cols: usize,
@@ -125,12 +142,29 @@ impl Definition {
                         "duel 需要至少一个 action 和 win".to_string(),
                     ));
                 }
-                FamilyDefinition::Duel(DuelDefinition)
+                FamilyDefinition::Duel(DuelDefinition {
+                    resources,
+                    actions,
+                    triggers,
+                    wins,
+                })
             }
-            "board" => FamilyDefinition::Board(
-                board
-                    .ok_or_else(|| DefinitionError("family board 需要 board 参数块".to_string()))?,
-            ),
+            "board" => {
+                if !resources.is_empty()
+                    || !actions.is_empty()
+                    || !triggers.is_empty()
+                    || !wins.is_empty()
+                {
+                    return Err(DefinitionError(
+                        "board family 不接受 duel 专属的 resource/action/on/win 声明".to_string(),
+                    ));
+                }
+                FamilyDefinition::Board(
+                    board.ok_or_else(|| {
+                        DefinitionError("family board 需要 board 参数块".to_string())
+                    })?,
+                )
+            }
             other => return Err(DefinitionError(format!("未知 family `{other}`"))),
         };
 
@@ -138,10 +172,6 @@ impl Definition {
             title,
             seats: usize::try_from(seats).unwrap_or(0),
             max_turns: max_turns.unwrap_or(40),
-            resources,
-            actions,
-            triggers,
-            wins,
             family,
         })
     }
@@ -150,16 +180,18 @@ impl Definition {
         &self.family
     }
 
-    pub fn resource(&self, name: &str) -> Option<&ResourceDef> {
-        self.resources.get(name)
+    pub fn duel(&self) -> Option<&DuelDefinition> {
+        match &self.family {
+            FamilyDefinition::Duel(duel) => Some(duel),
+            FamilyDefinition::Board(_) => None,
+        }
     }
 
-    pub fn action(&self, id: &str) -> Option<&ActionDef> {
-        self.actions.iter().find(|action| action.id == id)
-    }
-
-    pub fn trigger(&self, on: &str) -> &[Effect] {
-        self.triggers.get(on).map(Vec::as_slice).unwrap_or(&[])
+    pub fn board(&self) -> Option<&BoardDefinition> {
+        match &self.family {
+            FamilyDefinition::Duel(_) => None,
+            FamilyDefinition::Board(board) => Some(board),
+        }
     }
 }
 

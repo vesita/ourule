@@ -141,6 +141,35 @@ win {
 }
 
 #[test]
+fn turn_end_can_end_game_without_advancing_to_next_turn() {
+    let source = r#"
+game "turn-end"
+seats 2
+resource hp {
+  per player
+  init 2
+}
+action wait { }
+on turnEnd {
+  end draw "回合收尾结束"
+}
+win {
+  when false
+}
+"#;
+    let mut game = Match::start(definition(source), None, 1).expect("start");
+    let step = game.step("wait", None).expect("step");
+    assert_eq!(game.outcome().unwrap().kind, OutcomeKind::Draw);
+    assert_eq!(game.taken(), 0, "终止 turnEnd 不算已完成一帧");
+    assert!(
+        !step
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, oru_core::EventKind::TurnStarted { .. }))
+    );
+}
+
+#[test]
 fn private_resource_hides_other_values() {
     let source = r#"
 game "private"
