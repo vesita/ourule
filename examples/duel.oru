@@ -1,0 +1,41 @@
+# 月影对决：最小数值对决示例。
+game "月影对决"
+seats 2
+edition 1
+
+resource hp {
+  per player
+  init 12
+  min 0
+  max 12
+}
+
+resource energy {
+  per player
+  init 2
+  min 0
+  max 3
+}
+
+action slash "挥砍" {
+  when self.energy >= 1
+  do {
+    other.hp -= 4
+    self.energy -= 1
+  }
+}
+
+action meditate "冥想" {
+  do {
+    self.energy += 1
+  }
+}
+
+on turnEnd {
+  self.energy += 1
+}
+
+win {
+  when other.hp <= 0
+  say "{actor} 击倒了对手"
+}

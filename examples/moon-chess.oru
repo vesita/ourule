@@ -1,0 +1,22 @@
+# 月亮棋：M0 只校验声明，规则解释器在 M1。
+game "月亮棋"
+seats 2
+edition 1
+
+resource moves {
+  per game
+  init 0
+  min 0
+  max 40
+}
+
+action skip "跳过" {
+  do {
+    game.moves += 1
+  }
+}
+
+win {
+  when game.moves >= 40
+  say "手数用尽，平局"
+}
