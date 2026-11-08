@@ -1,0 +1,167 @@
+use oru_core::{Definition, Match, OutcomeKind, Perspective, RuleError};
+use oru_lang::check_source;
+
+fn definition(source: &str) -> Definition {
+    let program = check_source(source).expect("source should check");
+    Definition::from_program(&program).expect("definition should build")
+}
+
+const DUEL: &str = r#"
+game "月影对决"
+seats 2
+maxTurns 20
+
+resource hp {
+  per player
+  init 12
+  min 0
+  max 12
+}
+
+resource energy {
+  per player
+  init 2
+  min 0
+  max 3
+}
+
+action slash "挥砍" {
+  when self.energy >= 1
+  do {
+    other.hp -= 4
+    self.energy -= 1
+  }
+}
+
+action meditate "冥想" {
+  do {
+    self.energy += 1
+  }
+}
+
+on turnEnd {
+  self.energy += 1
+}
+
+win {
+  when other.hp <= 0
+  say "{actor} 击倒了对手"
+}
+"#;
+
+#[test]
+fn start_emits_match_and_turn_events() {
+    let game = Match::start(definition(DUEL), None, 42).expect("start");
+    assert_eq!(game.active(), 0);
+    assert_eq!(game.turn(), 1);
+    let model = game.read(Perspective::Admin).expect("read");
+    assert!(!model.finished);
+    assert!(model.offers.iter().any(|offer| offer.id == "slash"));
+    assert!(
+        model
+            .events
+            .iter()
+            .any(|event| format!("{:?}", event.kind).contains("MatchStarted"))
+    );
+}
+
+#[test]
+fn slash_changes_resources_and_advances_turn() {
+    let mut game = Match::start(definition(DUEL), None, 42).expect("start");
+    let step = game.step("slash").expect("step");
+    assert!(
+        step.events
+            .iter()
+            .any(|event| event.text().contains("挥砍"))
+    );
+    assert!(
+        step.events
+            .iter()
+            .any(|event| event.text().contains("hp：12 → 8"))
+    );
+    assert_eq!(game.active(), 1);
+    assert_eq!(game.turn(), 1);
+    assert_eq!(game.taken(), 1);
+}
+
+#[test]
+fn invalid_action_is_atomic() {
+    let mut game = Match::start(definition(DUEL), None, 42).expect("start");
+    let before = game.read(Perspective::Admin).expect("read");
+    let error = game.step("nope").expect_err("unknown action");
+    assert!(matches!(error, RuleError::UnknownAction(_)));
+    let after = game.read(Perspective::Admin).expect("read");
+    assert_eq!(before.events, after.events);
+    assert_eq!(before.resources, after.resources);
+    assert_eq!(before.active, after.active);
+}
+
+#[test]
+fn game_reaches_win() {
+    let mut game = Match::start(definition(DUEL), None, 7).expect("start");
+    for _ in 0..20 {
+        if game.outcome().is_some() {
+            break;
+        }
+        let offers = game.offers().expect("offers");
+        let action = if offers.iter().any(|offer| offer.id == "slash") {
+            "slash"
+        } else {
+            "meditate"
+        };
+        game.step(action).expect("step");
+    }
+    let outcome = game.outcome().expect("should finish");
+    assert_eq!(outcome.kind, OutcomeKind::Win);
+    assert!(outcome.text.contains("击倒"));
+}
+
+#[test]
+fn max_turns_draws() {
+    let source = r#"
+game "draw"
+seats 2
+maxTurns 1
+resource hp {
+  per player
+  init 1
+}
+action pass {
+  do { }
+}
+win {
+  when false
+}
+"#;
+    let mut game = Match::start(definition(source), None, 1).expect("start");
+    game.step("pass").expect("first");
+    game.step("pass").expect("second");
+    let outcome = game.outcome().expect("draw");
+    assert_eq!(outcome.kind, OutcomeKind::Draw);
+}
+
+#[test]
+fn private_resource_hides_other_values() {
+    let source = r#"
+game "private"
+seats 2
+resource secret {
+  per player
+  init 3
+  visibility private
+}
+action pass {
+  do { }
+}
+win {
+  when false
+}
+"#;
+    let game = Match::start(definition(source), None, 1).expect("start");
+    let admin = game.read(Perspective::Admin).expect("admin");
+    assert_eq!(admin.resources["secret"].values, vec![Some(3), Some(3)]);
+    let seat0 = game.read(Perspective::Seat(0)).expect("seat");
+    assert_eq!(seat0.resources["secret"].values, vec![Some(3), None]);
+    let spectator = game.read(Perspective::Spectator).expect("spectator");
+    assert_eq!(spectator.resources["secret"].values, vec![None, None]);
+}

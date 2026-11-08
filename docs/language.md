@@ -14,6 +14,7 @@
 game "月影对决"
 seats 2
 edition 1
+maxTurns 20
 
 resource hp {
   per player
@@ -59,7 +60,8 @@ edition 1
 
 - `game` 必填；
 - `seats` 必填，2–8；
-- M0 只支持 `edition 1`。
+- M0/M1 只支持 `edition 1`；
+- `maxTurns` 可选，默认 40，表示回合上限（按座位数换算成动作上限）。
 
 ### resource
 

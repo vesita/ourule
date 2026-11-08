@@ -12,6 +12,7 @@ pub enum Item {
     Game { name: String, span: Span },
     Seats { count: u32, span: Span },
     Edition { edition: u32, span: Span },
+    MaxTurns { turns: u32, span: Span },
     Resource(Resource),
     Action(Action),
     Trigger(Trigger),
@@ -76,7 +77,7 @@ pub enum Outcome {
     Draw,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EffectKind {
     Set {
         path: Path,
@@ -99,19 +100,19 @@ pub enum EffectKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Effect {
     pub kind: EffectKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     Int(i64),
     Bool(bool),
@@ -156,7 +157,7 @@ pub enum PathRoot {
     Game,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Path {
     pub root: PathRoot,
     pub name: String,

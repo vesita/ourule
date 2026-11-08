@@ -20,6 +20,7 @@ struct Ctx {
     game: Option<String>,
     seats: Option<u32>,
     edition: Option<u32>,
+    max_turns: Option<u32>,
     resources: BTreeMap<String, ResourceInfo>,
     actions: BTreeSet<String>,
     wins: usize,
@@ -65,6 +66,18 @@ pub fn check(program: &Program) -> Vec<Diagnostic> {
                         )
                         .with_help("先删掉 edition 或写成 edition 1"),
                     );
+                }
+            }
+            Item::MaxTurns { turns, span } => {
+                if ctx.max_turns.replace(*turns).is_some() {
+                    diagnostics.push(Diagnostic::error("ORU0332", "maxTurns 只能声明一次", *span));
+                }
+                if !(1..=10_000).contains(turns) {
+                    diagnostics.push(Diagnostic::error(
+                        "ORU0333",
+                        format!("maxTurns 必须在 1–10000，拿到 {turns}"),
+                        *span,
+                    ));
                 }
             }
             Item::Resource(resource) => {
@@ -194,7 +207,11 @@ pub fn check(program: &Program) -> Vec<Diagnostic> {
                     ));
                 }
             }
-            Item::Game { .. } | Item::Seats { .. } | Item::Edition { .. } | Item::Resource(_) => {}
+            Item::Game { .. }
+            | Item::Seats { .. }
+            | Item::Edition { .. }
+            | Item::MaxTurns { .. }
+            | Item::Resource(_) => {}
         }
     }
 
@@ -439,6 +456,7 @@ fn first_span(program: &Program) -> Span {
             Item::Game { span, .. }
             | Item::Seats { span, .. }
             | Item::Edition { span, .. }
+            | Item::MaxTurns { span, .. }
             | Item::Resource(Resource { span, .. })
             | Item::Action(Action { span, .. })
             | Item::Trigger(Trigger { span, .. })

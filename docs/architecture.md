@@ -55,8 +55,10 @@ MatchEnded
 
 ## 里程碑
 
-- **M0（当前）**：`.oru` 词法/语法/AST/检查器 + `Oru.toml` + `oru new/init/check`。
-- **M1**：Definition/Match/Kernel，事件模型，顺序行动，duel/board/card。
+- **M0（已完成）**：`.oru` 词法/语法/AST/检查器 + `Oru.toml` + `oru new/init/check`。
+- **M1（当前）**：Definition/Match/Kernel，事件模型，顺序行动，最小 duel 解释器，`oru run`。
+- **M1.5**：更多 action/trigger 能力、回放测试、`oru test` 雏形。
+- **M2**：board/card、同时行动、阶段机。
 - **M2**：同时行动、阶段机、队伍/角色、私密投影。
 - **M3**：`oru test`、黄金回放、`oru fmt`、LSP。
 - **M4**：依赖解析/锁文件/本地与 Git 依赖；注册表最后做。

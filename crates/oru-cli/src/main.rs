@@ -6,7 +6,9 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use oru_core::{Definition, Match, Perspective, ReadModel};
 use oru_lang::Diagnostic;
+use oru_lang::ast::Program;
 use oru_lang::manifest::MANIFEST_NAME;
 use oru_lang::{Manifest, Severity, check, lex, parse};
 
@@ -34,6 +36,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         Some("new") => cmd_new(&args[1..]),
         Some("init") => cmd_init(&args[1..]),
         Some("check") => cmd_check(&args[1..]),
+        Some("run") => cmd_run(&args[1..]),
         Some(other) => Err(format!("未知命令 `{other}`；oru --help 查看用法")),
     }
 }
@@ -48,6 +51,8 @@ oru —— 面向对话场景的规则驱动游戏语言
   oru init             在当前目录创建项目
   oru check [path]     检查项目或单个 .oru 文件
   oru check --json     机器可读诊断（CI/编辑器）
+  oru run [path]       开局并交互推进（act <id> / state / quit）
+  oru run --actions a,b --seed 42   非交互跑一串动作
   oru --version
 
 M0 检查：词法/语法/名字解析/类型/基础规则约束。
@@ -176,7 +181,10 @@ fn cmd_check(args: &[String]) -> Result<ExitCode, String> {
     let target = resolve_target(path.map(Path::new))?;
     let source = std::fs::read_to_string(&target.file)
         .map_err(|error| format!("读不到 {}：{error}", target.file.display()))?;
-    let diagnostics = check_source(&source);
+    let diagnostics = match checked_program(&source) {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics,
+    };
     let errors = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.severity == Severity::Error)
@@ -223,16 +231,223 @@ fn cmd_check(args: &[String]) -> Result<ExitCode, String> {
     }
 }
 
-fn check_source(source: &str) -> Vec<Diagnostic> {
-    let tokens = match lex(source) {
-        Ok(tokens) => tokens,
-        Err(diagnostics) => return diagnostics,
-    };
-    let program = match parse(tokens) {
+fn cmd_run(args: &[String]) -> Result<ExitCode, String> {
+    let mut seats: Option<usize> = None;
+    let mut seed: u64 = 42;
+    let mut actions: Option<Vec<String>> = None;
+    let mut json = false;
+    let mut path: Option<&str> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--seats" => {
+                index += 1;
+                seats = Some(
+                    args.get(index)
+                        .ok_or("--seats 需要数字")?
+                        .parse::<usize>()
+                        .map_err(|_| "--seats 需要数字")?,
+                );
+            }
+            "--seed" => {
+                index += 1;
+                seed = args
+                    .get(index)
+                    .ok_or("--seed 需要数字")?
+                    .parse::<u64>()
+                    .map_err(|_| "--seed 需要数字")?;
+            }
+            "--actions" => {
+                index += 1;
+                let value = args.get(index).ok_or("--actions 需要动作 id 列表")?;
+                let list: Vec<String> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if list.is_empty() {
+                    return Err("--actions 列表不能为空".to_string());
+                }
+                actions = Some(list);
+            }
+            "--json" => json = true,
+            "--help" | "-h" => {
+                print_help();
+                return Ok(ExitCode::SUCCESS);
+            }
+            other if other.starts_with('-') => return Err(format!("run 不认识参数 `{other}`")),
+            other => {
+                if path.replace(other).is_some() {
+                    return Err("run 只接受一个路径".to_string());
+                }
+            }
+        }
+        index += 1;
+    }
+
+    let target = resolve_target(path.map(Path::new))?;
+    let source = std::fs::read_to_string(&target.file)
+        .map_err(|error| format!("读不到 {}：{error}", target.file.display()))?;
+    let program = match checked_program(&source) {
         Ok(program) => program,
-        Err(diagnostic) => return vec![diagnostic],
+        Err(diagnostics) => {
+            for diagnostic in &diagnostics {
+                eprint!(
+                    "{}",
+                    diagnostic.render_with_path(&target.file.display().to_string(), &source)
+                );
+            }
+            return Ok(ExitCode::from(2));
+        }
     };
-    check(&program)
+    let definition =
+        Definition::from_program(&program).map_err(|error| format!("规则定义失败：{error}"))?;
+    let mut game =
+        Match::start(definition, seats, seed).map_err(|error| format!("开局失败：{error}"))?;
+
+    if json {
+        let initial = game
+            .read(Perspective::Admin)
+            .map_err(|error| error.to_string())?;
+        let mut steps = Vec::new();
+        if let Some(actions) = &actions {
+            for action in actions {
+                let step = game
+                    .step(action)
+                    .map_err(|error| format!("动作 `{action}` 失败：{error}"))?;
+                steps.push(step);
+            }
+        }
+        let payload = serde_json::json!({
+            "model": initial,
+            "steps": steps,
+            "final": game.read(Perspective::Admin).map_err(|error| error.to_string())?,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload)
+                .map_err(|error| format!("JSON 序列化失败：{error}"))?
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    print_model(
+        &game
+            .read(Perspective::Admin)
+            .map_err(|error| error.to_string())?,
+    );
+    if let Some(actions) = &actions {
+        for action in actions {
+            let step = game
+                .step(action)
+                .map_err(|error| format!("动作 `{action}` 失败：{error}"))?;
+            print_step(&step);
+            if step.model.finished {
+                break;
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    interactive(&mut game)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn interactive(game: &mut Match) -> Result<(), String> {
+    use std::io::{self, Write};
+    let stdin = io::stdin();
+    loop {
+        print!("> ");
+        io::stdout().flush().map_err(|error| error.to_string())?;
+        let mut line = String::new();
+        if stdin
+            .read_line(&mut line)
+            .map_err(|error| error.to_string())?
+            == 0
+        {
+            return Ok(());
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match line {
+            "quit" | "exit" | "q" => return Ok(()),
+            "state" | "s" => {
+                print_model(
+                    &game
+                        .read(Perspective::Admin)
+                        .map_err(|error| error.to_string())?,
+                );
+            }
+            "help" | "h" => println!("act <id> | state | quit"),
+            other => {
+                let Some(action) = other.strip_prefix("act ") else {
+                    println!("未知命令；用 act <id> / state / quit");
+                    continue;
+                };
+                match game.step(action.trim()) {
+                    Ok(step) => {
+                        print_step(&step);
+                        if step.model.finished {
+                            return Ok(());
+                        }
+                    }
+                    Err(error) => println!("动作失败：{error}"),
+                }
+            }
+        }
+    }
+}
+
+fn print_step(step: &oru_core::Step) {
+    for event in &step.events {
+        println!("  · {}", event.text());
+    }
+}
+
+fn print_model(model: &ReadModel) {
+    println!(
+        "{} · 第 {} 回合 · 轮到 玩家{}",
+        model.title,
+        model.turn,
+        model.active + 1
+    );
+    for (name, resource) in &model.resources {
+        let values: Vec<String> = resource
+            .values
+            .iter()
+            .map(|value| value.map_or("?".to_string(), |value| value.to_string()))
+            .collect();
+        println!("  {name}: {}", values.join(" / "));
+    }
+    if model.finished {
+        if let Some(outcome) = &model.outcome {
+            println!("对局结束：{}", outcome.text);
+        }
+        return;
+    }
+    let offers: Vec<String> = model
+        .offers
+        .iter()
+        .map(|offer| format!("{}({})", offer.id, offer.label))
+        .collect();
+    println!("可选动作: {}", offers.join(", "));
+}
+
+fn checked_program(source: &str) -> Result<Program, Vec<Diagnostic>> {
+    let tokens = lex(source)?;
+    let program = parse(tokens).map_err(|diagnostic| vec![diagnostic])?;
+    let diagnostics = check(&program);
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        Err(diagnostics)
+    } else {
+        Ok(program)
+    }
 }
 
 struct Target {

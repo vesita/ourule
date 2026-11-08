@@ -29,6 +29,7 @@ impl Parser {
                 Some("game") => Some(self.parse_game()?),
                 Some("seats") => Some(self.parse_seats()?),
                 Some("edition") => Some(self.parse_edition()?),
+                Some("maxTurns") => Some(self.parse_max_turns()?),
                 Some("resource") => Some(Item::Resource(self.parse_resource()?)),
                 Some("action") => Some(Item::Action(self.parse_action()?)),
                 Some("on") => Some(Item::Trigger(self.parse_trigger()?)),
@@ -84,6 +85,18 @@ impl Parser {
         self.finish_statement()?;
         Ok(Item::Edition {
             edition,
+            span: Span::new(start, span.end),
+        })
+    }
+
+    fn parse_max_turns(&mut self) -> Result<Item, Diagnostic> {
+        let start = self.bump_ident("maxTurns")?.start;
+        let (turns, span) = self.expect_int("maxTurns 后面需要回合上限，例如 maxTurns 40")?;
+        let turns = u32::try_from(turns)
+            .map_err(|_| Diagnostic::error("ORU0204", "maxTurns 必须是正数", span))?;
+        self.finish_statement()?;
+        Ok(Item::MaxTurns {
+            turns,
             span: Span::new(start, span.end),
         })
     }

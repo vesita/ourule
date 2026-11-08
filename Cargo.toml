@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/oru-lang", "crates/oru-cli"]
+members = ["crates/oru-lang", "crates/oru-core", "crates/oru-cli"]
 
 [workspace.package]
 version = "0.1.0"

@@ -79,3 +79,18 @@ fn json_output_is_machine_readable() {
     assert_eq!(value["ok"], true);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn run_actions_reaches_result() {
+    let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/duel.oru");
+    let output = Command::new(env!("CARGO_BIN_EXE_oru"))
+        .arg("run")
+        .arg(&example)
+        .arg("--actions")
+        .arg("slash,slash,slash,slash,slash,slash")
+        .output()
+        .expect("run oru run");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("击倒了对手"), "{stdout}");
+}

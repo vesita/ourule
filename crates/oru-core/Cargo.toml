@@ -1,0 +1,9 @@
+[package]
+name = "oru-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oru-lang = { workspace = true }
+serde = { workspace = true }
