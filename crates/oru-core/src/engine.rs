@@ -233,10 +233,6 @@ impl Match {
         self.seats
     }
 
-    pub fn family_state(&self) -> &FamilyState {
-        &self.family
-    }
-
     pub fn active(&self) -> usize {
         self.active
     }

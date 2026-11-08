@@ -1,4 +1,4 @@
-use oru_core::{Definition, FamilyDefinition, FamilyState, Match, OutcomeKind, Perspective};
+use oru_core::{Definition, FamilyDefinition, Match, OutcomeKind, Perspective};
 use oru_lang::check_source;
 
 fn board_definition(source: &str) -> Definition {
@@ -23,7 +23,6 @@ fn board_family_builds_initial_grid_and_offers_cells() {
     let definition = board_definition(BOARD);
     assert!(matches!(definition.family(), FamilyDefinition::Board(_)));
     let game = Match::start(definition, None, 1).expect("start");
-    assert!(matches!(game.family_state(), FamilyState::Board(_)));
     let model = game.read(Perspective::Admin).expect("read");
     assert_eq!(model.board.as_ref().expect("board view").cells.len(), 9);
     assert_eq!(model.offers.len(), 9);

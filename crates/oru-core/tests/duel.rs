@@ -66,25 +66,11 @@ fn start_emits_match_and_turn_events() {
 }
 
 #[test]
-fn duel_mutable_resources_live_inside_duel_family_state() {
+fn duel_state_and_resource_view_start_consistently() {
     let game = Match::start(definition(DUEL), None, 42).expect("start");
-    let oru_core::FamilyState::Duel(duel) = game.family_state() else {
-        panic!("duel Definition must produce DuelState");
-    };
-    assert!(matches!(
-        duel.resources.get("hp"),
-        Some(oru_core::ResourceValues::Player(values)) if values == &[12, 12]
-    ));
-    assert!(matches!(
-        duel.resources.get("energy"),
-        Some(oru_core::ResourceValues::Player(values)) if values == &[2, 2]
-    ));
-    assert!(
-        game.read(Perspective::Admin)
-            .unwrap()
-            .resources
-            .contains_key("hp")
-    );
+    let model = game.read(Perspective::Admin).unwrap();
+    assert_eq!(model.resources["hp"].values, vec![Some(12), Some(12)]);
+    assert_eq!(model.resources["energy"].values, vec![Some(2), Some(2)]);
 }
 
 #[test]
