@@ -13,10 +13,20 @@ pub enum Item {
     Seats { count: u32, span: Span },
     Edition { edition: u32, span: Span },
     MaxTurns { turns: u32, span: Span },
+    Family { family: String, span: Span },
+    Board(BoardSpec),
     Resource(Resource),
     Action(Action),
     Trigger(Trigger),
     Win(WinRule),
+}
+
+#[derive(Debug, Clone)]
+pub struct BoardSpec {
+    pub rows: usize,
+    pub cols: usize,
+    pub line_length: usize,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

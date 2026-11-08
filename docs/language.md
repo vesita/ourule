@@ -1,4 +1,4 @@
-# Oru 语言 M0
+# Oru 语言 M0–M2
 
 > 目标：把“规则写起来像声明，检查起来像编译器”先跑通。
 
@@ -6,7 +6,7 @@
 
 - 后缀 `.oru`；
 - 一个项目由 `Oru.toml` + `src/main.oru` 组成；
-- 一个 `.oru` 文件可以包含多个 `resource` / `action` / `win`，但只有一个 `game` / `seats` / `edition`。
+- 一个 `.oru` 文件可包含多个 family 专属规则声明；`game` / `seats` / `edition` / `family` 最多一个。
 
 ## 最小示例
 
@@ -60,18 +60,19 @@ edition 1
 
 - `game` 必填；
 - `seats` 必填，2–8；
-- M0/M1 只支持 `edition 1`；
-- `maxTurns` 可选，默认 40，表示回合上限（按座位数换算成动作上限）。
+- 只支持 `edition 1`；
+- `family` 可省略（默认 duel），支持 duel / board；board 必须显式 `family board`；
+- duel 的 `maxTurns` 可选，默认 40，按座位数换算成动作上限。
 
 ### resource
 
 ```oru
 resource hp {
-  per player        # player | game | team（M0 的 team 只声明，不运行）
+  per player        # duel 支持 player / game；team 后续加入
   init 12
   min 0
   max 12
-  visibility public # public | private（M0 只校验，投影在 M1）
+  visibility public # public / private，读取模型按 perspective 投影
 }
 ```
 
@@ -106,7 +107,7 @@ on turnEnd {
 }
 ```
 
-M0 只接受：
+duel 目前接受：
 
 - `start`
 - `turnStart`
@@ -123,11 +124,11 @@ win {
 
 - 至少一条 `win`；
 - `when` 必须是布尔表达式；
-- `say` 是叙述模板，M0 只检查非空，不执行。
+- `say` 是叙述模板，目前只检查非空；事件文案在内核产生，渲染格式由上层负责。
 
 ## 表达式
 
-M0 支持：
+duel 支持：
 
 ```text
 整数、true/false
@@ -146,7 +147,7 @@ and / or / !
 
 ## 效果
 
-M0 支持：
+duel 支持：
 
 ```oru
 other.hp -= 4
@@ -182,12 +183,37 @@ error[ORU0329]: 未声明的资源 `energi`
 
 `--json` 输出给 CI/编辑器使用。
 
-## M0 不做的
+## Board family（M2）
 
-- 运行时解释器；
-- 阶段机、同时行动、队伍/角色；
-- 卡牌/网格/视图/渲染；
+```oru
+game "月亮棋"
+seats 2
+family board
+board {
+  rows 3
+  cols 3
+  line 3
+}
+```
+
+board family 自动提供 `place` 动作；目标是格位 `a1`…，合法落点从 `offers` 读取。
+连成 `line` 长度的横/竖/斜线获胜；棋盘满且无人获胜则平局。
+
+board family 目前只支持棋盘参数，不接收 duel 的 `resource/action/on/win` 声明。
+`maxTurns` 仍作为通用硬上限；在 board 满盘/连线判定之前，胜负优先于和局。
+
+CLI 示例：
+
+```bash
+oru run examples/moon-chess.oru --actions place:a1,place:b1,place:a2,place:b2,place:a3
+```
+
+## 暂不支持
+
+- 同时行动/阶段机；
+- 卡牌、队伍/角色与私密行动；
 - 依赖解析、锁文件、注册表；
-- LSP、fmt、test。
+- LSP、fmt、完整测试 DSL；
+- 自定义渲染。
 
-这些在后续里程碑按 `docs/architecture.md` 的层次加入。
+这些按 `docs/architecture.md` 的里程碑加入。

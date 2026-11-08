@@ -68,7 +68,7 @@ fn start_emits_match_and_turn_events() {
 #[test]
 fn slash_changes_resources_and_advances_turn() {
     let mut game = Match::start(definition(DUEL), None, 42).expect("start");
-    let step = game.step("slash").expect("step");
+    let step = game.step("slash", None).expect("step");
     assert!(
         step.events
             .iter()
@@ -88,7 +88,7 @@ fn slash_changes_resources_and_advances_turn() {
 fn invalid_action_is_atomic() {
     let mut game = Match::start(definition(DUEL), None, 42).expect("start");
     let before = game.read(Perspective::Admin).expect("read");
-    let error = game.step("nope").expect_err("unknown action");
+    let error = game.step("nope", None).expect_err("unknown action");
     assert!(matches!(error, RuleError::UnknownAction(_)));
     let after = game.read(Perspective::Admin).expect("read");
     assert_eq!(before.events, after.events);
@@ -109,7 +109,7 @@ fn game_reaches_win() {
         } else {
             "meditate"
         };
-        game.step(action).expect("step");
+        game.step(action, None).expect("step");
     }
     let outcome = game.outcome().expect("should finish");
     assert_eq!(outcome.kind, OutcomeKind::Win);
@@ -134,8 +134,8 @@ win {
 }
 "#;
     let mut game = Match::start(definition(source), None, 1).expect("start");
-    game.step("pass").expect("first");
-    game.step("pass").expect("second");
+    game.step("pass", None).expect("first");
+    game.step("pass", None).expect("second");
     let outcome = game.outcome().expect("draw");
     assert_eq!(outcome.kind, OutcomeKind::Draw);
 }
@@ -164,4 +164,48 @@ win {
     assert_eq!(seat0.resources["secret"].values, vec![Some(3), None]);
     let spectator = game.read(Perspective::Spectator).expect("spectator");
     assert_eq!(spectator.resources["secret"].values, vec![None, None]);
+}
+
+#[test]
+fn private_resource_change_event_is_filtered_by_perspective() {
+    let source = r#"
+game "private"
+seats 2
+resource secret {
+  per player
+  init 1
+  visibility private
+}
+action spend {
+  do {
+    self.secret -= 1
+  }
+}
+win {
+  when false
+}
+"#;
+    let mut game = Match::start(definition(source), None, 1).expect("start");
+    game.step("spend", None).expect("step");
+    let seat0 = game.read(Perspective::Seat(0)).unwrap();
+    let seat1 = game.read(Perspective::Seat(1)).unwrap();
+    let admin = game.read(Perspective::Admin).unwrap();
+    assert!(
+        seat0
+            .events
+            .iter()
+            .any(|event| event.text().contains("secret"))
+    );
+    assert!(
+        !seat1
+            .events
+            .iter()
+            .any(|event| event.text().contains("secret"))
+    );
+    assert!(
+        admin
+            .events
+            .iter()
+            .any(|event| event.text().contains("secret"))
+    );
 }

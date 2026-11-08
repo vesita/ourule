@@ -8,7 +8,7 @@ use oru_lang::ast::{
 };
 use serde::Serialize;
 
-use crate::definition::{Definition, DefinitionError};
+use crate::definition::{BoardDefinition, Definition, DefinitionError, FamilyDefinition};
 use crate::event::{Event, EventKind, ResourceScope, Visibility};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -30,6 +30,15 @@ pub struct OutcomeRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionOffer {
+    pub id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<ActionTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionTarget {
     pub id: String,
     pub label: String,
 }
@@ -77,6 +86,7 @@ enum Values {
 #[derive(Debug, Clone)]
 pub struct Match {
     definition: Definition,
+    family: FamilyState,
     seats: usize,
     active: usize,
     turn: u32,
@@ -85,6 +95,26 @@ pub struct Match {
     outcome: Option<OutcomeRecord>,
     rng: u64,
     events: Vec<Event>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FamilyState {
+    Duel,
+    Board(BoardState),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardView {
+    pub rows: usize,
+    pub cols: usize,
+    pub cells: Vec<Option<usize>>,
+    pub line_length: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardState {
+    pub cells: Vec<Option<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -109,6 +139,7 @@ pub struct ReadModel {
     pub outcome: Option<OutcomeRecord>,
     pub offers: Vec<ActionOffer>,
     pub resources: BTreeMap<String, ResourceView>,
+    pub board: Option<BoardView>,
     pub events: Vec<Event>,
 }
 
@@ -129,6 +160,12 @@ impl Match {
         if !(2..=8).contains(&seats) {
             return Err(RuleError::BadSeats(format!("必须是 2–8，拿到 {seats}")));
         }
+        let family = match definition.family() {
+            FamilyDefinition::Duel(_) => FamilyState::Duel,
+            FamilyDefinition::Board(board) => FamilyState::Board(BoardState {
+                cells: vec![None; board.rows.saturating_mul(board.cols)],
+            }),
+        };
         let mut resources = BTreeMap::new();
         for (name, resource) in &definition.resources {
             let values = match resource.per {
@@ -146,6 +183,7 @@ impl Match {
         }
         let mut game = Self {
             definition,
+            family,
             seats,
             active: 0,
             turn: 1,
@@ -184,6 +222,10 @@ impl Match {
         self.seats
     }
 
+    pub fn family_state(&self) -> &FamilyState {
+        &self.family
+    }
+
     pub fn active(&self) -> usize {
         self.active
     }
@@ -209,6 +251,14 @@ impl Match {
             return Ok(Vec::new());
         }
         let mut offers = Vec::new();
+        if let FamilyState::Board(board_state) = &self.family {
+            let FamilyDefinition::Board(board) = self.definition.family() else {
+                return Err(RuleError::Eval(
+                    "Match family 与 Definition 不匹配".to_string(),
+                ));
+            };
+            return Ok(board_offers(board, board_state, self.active));
+        }
         for action in &self.definition.actions {
             let allowed = match &action.when {
                 None => true,
@@ -218,6 +268,7 @@ impl Match {
                 offers.push(ActionOffer {
                     id: action.id.clone(),
                     label: action.label.clone(),
+                    target: None,
                 });
             }
         }
@@ -225,21 +276,22 @@ impl Match {
     }
 
     /// 推进一帧：一帧只处理一个动作；失败时原 Match 完全不变。
-    pub fn step(&mut self, action_id: &str) -> Result<Step, RuleError> {
+    pub fn step(&mut self, action_id: &str, target: Option<&str>) -> Result<Step, RuleError> {
         let mut next = self.clone();
         let start = next.events.len();
-        next.step_inner(action_id)?;
+        next.step_inner(action_id, target)?;
+        let model = next.read(Perspective::Admin)?;
+        let events = next.events[start..].to_vec();
         *self = next;
-        let events = self.events[start..].to_vec();
-        Ok(Step {
-            events,
-            model: self.read(Perspective::Admin)?,
-        })
+        Ok(Step { events, model })
     }
 
-    fn step_inner(&mut self, action_id: &str) -> Result<(), RuleError> {
+    fn step_inner(&mut self, action_id: &str, target: Option<&str>) -> Result<(), RuleError> {
         if self.outcome.is_some() {
             return Err(RuleError::GameOver);
+        }
+        if matches!(self.family, FamilyState::Board(_)) {
+            return self.step_board(action_id, target);
         }
         let action = self
             .definition
@@ -252,6 +304,12 @@ impl Match {
             return Err(RuleError::NotAllowed {
                 action: action_id.to_string(),
                 reason: "when 条件不满足".to_string(),
+            });
+        }
+        if target.is_some() {
+            return Err(RuleError::NotAllowed {
+                action: action_id.to_string(),
+                reason: "duel 动作不接受 target".to_string(),
             });
         }
 
@@ -347,6 +405,15 @@ impl Match {
                 )
             })
             .collect();
+        let board = match (&self.family, self.definition.family()) {
+            (FamilyState::Board(state), FamilyDefinition::Board(def)) => Some(BoardView {
+                rows: def.rows,
+                cols: def.cols,
+                cells: state.cells.clone(),
+                line_length: def.line_length,
+            }),
+            _ => None,
+        };
         Ok(ReadModel {
             title: self.definition.title.clone(),
             seats: self.seats,
@@ -357,7 +424,13 @@ impl Match {
             outcome: self.outcome.clone(),
             offers: self.offers()?,
             resources,
-            events: self.events.clone(),
+            board,
+            events: self
+                .events
+                .iter()
+                .filter(|event| event_visible(event.visibility, perspective))
+                .cloned()
+                .collect(),
         })
     }
 
@@ -411,6 +484,85 @@ impl Match {
             if self.outcome.is_some() && !matches!(effect.kind, EffectKind::End { .. }) {
                 // 结束效果之后的同批效果不再执行，避免在已结束对局上继续改状态。
                 break;
+            }
+        }
+        Ok(())
+    }
+
+    fn step_board(&mut self, action_id: &str, target: Option<&str>) -> Result<(), RuleError> {
+        if action_id != "place" {
+            return Err(RuleError::UnknownAction(action_id.to_string()));
+        }
+        let target = target.ok_or_else(|| RuleError::NotAllowed {
+            action: action_id.to_string(),
+            reason: "place 需要 target 格位，例如 a1".to_string(),
+        })?;
+        let FamilyDefinition::Board(def) = self.definition.family() else {
+            return Err(RuleError::Eval(
+                "board state 与 Definition 不匹配".to_string(),
+            ));
+        };
+        let index = parse_cell(target, def).ok_or_else(|| RuleError::NotAllowed {
+            action: action_id.to_string(),
+            reason: format!("target `{target}` 不是合法格位"),
+        })?;
+        let actor = self.active;
+        let won = {
+            let FamilyState::Board(board) = &mut self.family else {
+                return Err(RuleError::Eval("board state 与 Match 不匹配".to_string()));
+            };
+            if board.cells.get(index).is_none_or(Option::is_some) {
+                return Err(RuleError::NotAllowed {
+                    action: action_id.to_string(),
+                    reason: format!("格位 {target} 已被占用"),
+                });
+            }
+            board.cells[index] = Some(actor);
+            board_winner(board, def, actor)
+        };
+        let label = format!("落子 {target}");
+        self.push_event(
+            Visibility::Public,
+            EventKind::ActionResolved {
+                seat: actor,
+                action: action_id.to_string(),
+                label,
+            },
+        );
+        self.push_event(
+            Visibility::Public,
+            EventKind::PiecePlaced {
+                seat: actor,
+                target: target.to_string(),
+            },
+        );
+        if won {
+            self.finish(
+                OutcomeKind::Win,
+                Some(actor),
+                format!("玩家{} 连成一线获胜", actor + 1),
+            );
+        }
+        if self.outcome.is_none() {
+            self.push_event(Visibility::Public, EventKind::TurnEnded { seat: actor });
+            self.taken = self.taken.saturating_add(1);
+            self.advance_turn();
+            let limit = self
+                .definition
+                .max_turns
+                .saturating_mul(u32::try_from(self.seats).unwrap_or(u32::MAX));
+            if self.taken >= limit {
+                self.finish(OutcomeKind::Draw, None, "回合数用尽，平局".to_string());
+            } else if board_full(&self.family) {
+                self.finish(OutcomeKind::Draw, None, "棋盘已满，平局".to_string());
+            } else {
+                self.push_event(
+                    Visibility::Public,
+                    EventKind::TurnStarted {
+                        seat: self.active,
+                        turn: self.turn,
+                    },
+                );
             }
         }
         Ok(())
@@ -513,6 +665,14 @@ impl Match {
             .definition
             .resource(&name)
             .ok_or_else(|| RuleError::Eval(format!("资源 `{name}` 不存在")))?;
+        let visibility = match (resource.visibility, path.root) {
+            (AstVisibility::Public, _) => Visibility::Public,
+            (AstVisibility::Private, PathRoot::SelfSeat) => Visibility::Private(self.active),
+            (AstVisibility::Private, PathRoot::Other) => {
+                Visibility::Private((self.active + 1) % self.seats)
+            }
+            (AstVisibility::Private, PathRoot::Game) => Visibility::Private(self.active),
+        };
         let next = clamp(resource, value);
         match (scope, self.resources.get_mut(&name)) {
             (PathRoot::Game, Some(Values::Game(value))) => *value = next,
@@ -536,7 +696,7 @@ impl Match {
                 PathRoot::Other => ResourceScope::Player((self.active + 1) % self.seats),
             };
             self.push_event(
-                Visibility::Public,
+                visibility,
                 EventKind::ResourceChanged {
                     scope,
                     name,
@@ -611,6 +771,83 @@ impl Match {
     }
 }
 
+fn board_offers(def: &BoardDefinition, state: &BoardState, _active: usize) -> Vec<ActionOffer> {
+    let mut offers = Vec::new();
+    for (index, cell) in state.cells.iter().enumerate() {
+        if cell.is_none() {
+            let target = cell_name(index, def.cols);
+            offers.push(ActionOffer {
+                id: "place".to_string(),
+                label: format!("落子 {target}"),
+                target: Some(ActionTarget {
+                    id: target.clone(),
+                    label: target,
+                }),
+            });
+        }
+    }
+    offers
+}
+
+fn cell_name(index: usize, cols: usize) -> String {
+    let row = index / cols;
+    let col = index % cols;
+    let letter = char::from(b'a' + u8::try_from(col).unwrap_or(0));
+    format!("{letter}{}", row + 1)
+}
+
+fn parse_cell(target: &str, def: &BoardDefinition) -> Option<usize> {
+    let mut chars = target.chars();
+    let col_char = chars.next()?;
+    if !col_char.is_ascii_lowercase() {
+        return None;
+    }
+    let row = chars.as_str().parse::<usize>().ok()?.checked_sub(1)?;
+    let col = usize::try_from(u32::from(col_char) - u32::from('a')).ok()?;
+    if row >= def.rows || col >= def.cols {
+        return None;
+    }
+    Some(row * def.cols + col)
+}
+
+fn board_full(state: &FamilyState) -> bool {
+    match state {
+        FamilyState::Board(board) => board.cells.iter().all(Option::is_some),
+        FamilyState::Duel => false,
+    }
+}
+
+fn board_winner(state: &BoardState, def: &BoardDefinition, seat: usize) -> bool {
+    let n = def.line_length;
+    if n == 0 || n > def.rows.max(def.cols) {
+        return false;
+    }
+    let directions = [(0isize, 1isize), (1, 0), (1, 1), (1, -1)];
+    for row in 0..def.rows {
+        for col in 0..def.cols {
+            for (dr, dc) in directions {
+                let end_row = row as isize + dr * (n as isize - 1);
+                let end_col = col as isize + dc * (n as isize - 1);
+                if end_row < 0
+                    || end_col < 0
+                    || end_row >= def.rows as isize
+                    || end_col >= def.cols as isize
+                {
+                    continue;
+                }
+                if (0..n).all(|offset| {
+                    let r = (row as isize + dr * offset as isize) as usize;
+                    let c = (col as isize + dc * offset as isize) as usize;
+                    state.cells[r * def.cols + c] == Some(seat)
+                }) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Value {
     Int(i64),
@@ -642,6 +879,14 @@ fn clamp(resource: &crate::definition::ResourceDef, value: i64) -> i64 {
         value = value.min(max);
     }
     value
+}
+
+fn event_visible(visibility: Visibility, perspective: Perspective) -> bool {
+    match (visibility, perspective) {
+        (Visibility::Public, _) | (Visibility::Private(_), Perspective::Admin) => true,
+        (Visibility::Private(_), Perspective::Spectator) => false,
+        (Visibility::Private(owner), Perspective::Seat(viewer)) => owner == viewer,
+    }
 }
 
 fn visible(visibility: AstVisibility, perspective: Perspective, seat: usize) -> bool {

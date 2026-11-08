@@ -1,6 +1,6 @@
 //! 语义检查：名字解析 + 类型检查 + 规则约束。
 //!
-//! M0 的检查器只依赖 AST，不读文件、不跑运行时；`oru check` 的所有“编译期错误”都在这里。
+//! 检查器只依赖 AST，不读文件、不跑运行时；`oru check` 的所有“编译期错误”都在这里。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,6 +21,9 @@ struct Ctx {
     seats: Option<u32>,
     edition: Option<u32>,
     max_turns: Option<u32>,
+    family: Option<String>,
+    board: Option<(usize, usize, usize)>,
+    board_span: Option<Span>,
     resources: BTreeMap<String, ResourceInfo>,
     actions: BTreeSet<String>,
     wins: usize,
@@ -61,7 +64,7 @@ pub fn check(program: &Program) -> Vec<Diagnostic> {
                     diagnostics.push(
                         Diagnostic::error(
                             "ORU0306",
-                            format!("M0 只支持 edition 1，拿到 {edition}"),
+                            format!("当前只支持 edition 1，拿到 {edition}"),
                             *span,
                         )
                         .with_help("先删掉 edition 或写成 edition 1"),
@@ -77,6 +80,44 @@ pub fn check(program: &Program) -> Vec<Diagnostic> {
                         "ORU0333",
                         format!("maxTurns 必须在 1–10000，拿到 {turns}"),
                         *span,
+                    ));
+                }
+            }
+            Item::Family { family, span } => {
+                if ctx.family.replace(family.clone()).is_some() {
+                    diagnostics.push(Diagnostic::error("ORU0334", "family 只能声明一次", *span));
+                }
+                if family != "duel" && family != "board" {
+                    diagnostics.push(
+                        Diagnostic::error("ORU0335", format!("未知 family `{family}`"), *span)
+                            .with_help("当前支持：duel / board"),
+                    );
+                }
+            }
+            Item::Board(board) => {
+                if ctx
+                    .board
+                    .replace((board.rows, board.cols, board.line_length))
+                    .is_some()
+                {
+                    diagnostics.push(Diagnostic::error(
+                        "ORU0336",
+                        "board 只能声明一次",
+                        board.span,
+                    ));
+                }
+                if !(2..=26).contains(&board.rows) || !(2..=26).contains(&board.cols) {
+                    diagnostics.push(Diagnostic::error(
+                        "ORU0337",
+                        "board.rows / board.cols 必须在 2–26",
+                        board.span,
+                    ));
+                }
+                if board.line_length < 2 || board.line_length > board.rows.max(board.cols) {
+                    diagnostics.push(Diagnostic::error(
+                        "ORU0338",
+                        "board.line 必须至少为 2，且不能大于棋盘最长边",
+                        board.span,
                     ));
                 }
             }
@@ -105,10 +146,10 @@ pub fn check(program: &Program) -> Vec<Diagnostic> {
                     diagnostics.push(
                         Diagnostic::error(
                             "ORU0309",
-                            "M0 还不支持 team 作用域资源",
+                            "M2 还不支持 team 作用域资源",
                             resource.per_span.unwrap_or(resource.name_span),
                         )
-                        .with_help("先用 player / game；team 会在 M1 加入"),
+                        .with_help("先用 player / game；team 作为后续 Family 能力加入"),
                     );
                 }
                 if let (Some(min), Some(max)) = (resource.min, resource.max)
@@ -189,7 +230,7 @@ pub fn check(program: &Program) -> Vec<Diagnostic> {
                             format!("未知触发时机 `{other}`"),
                             trigger.on_span,
                         )
-                        .with_help("M0 可用：start / turnStart / turnEnd"),
+                        .with_help("可用：start / turnStart / turnEnd"),
                     ),
                 }
                 check_effects(&trigger.effects, &ctx, &mut diagnostics);
@@ -211,8 +252,69 @@ pub fn check(program: &Program) -> Vec<Diagnostic> {
             | Item::Seats { .. }
             | Item::Edition { .. }
             | Item::MaxTurns { .. }
+            | Item::Family { .. }
+            | Item::Board(_)
             | Item::Resource(_) => {}
         }
+    }
+
+    let family = ctx.family.as_deref().unwrap_or("duel");
+    if family == "board" && ctx.board.is_none() {
+        diagnostics.push(Diagnostic::error(
+            "ORU0339",
+            "family board 需要 board 块",
+            first_span(program),
+        ));
+    }
+    if family == "board" {
+        for item in &program.items {
+            match item {
+                Item::Action(action) => diagnostics.push(Diagnostic::error(
+                    "ORU0340",
+                    "board family 动作由引擎生成，不能声明 duel action",
+                    action.span,
+                )),
+                Item::Trigger(trigger) => diagnostics.push(Diagnostic::error(
+                    "ORU0342",
+                    "board family 暂不支持 on trigger",
+                    trigger.span,
+                )),
+                Item::Win(win) => diagnostics.push(Diagnostic::error(
+                    "ORU0343",
+                    "board family 的连线胜负由 board 参数定义，不接受自定义 win",
+                    win.span,
+                )),
+                Item::Resource(resource) => diagnostics.push(Diagnostic::error(
+                    "ORU0344",
+                    "board family 暂不支持 resource 声明",
+                    resource.span,
+                )),
+                _ => {}
+            }
+        }
+    }
+    if family == "duel" && ctx.board.is_some() {
+        diagnostics.push(Diagnostic::error(
+            "ORU0341",
+            "board 块需要 `family board`",
+            ctx.board_span.unwrap_or_else(|| first_span(program)),
+        ));
+    }
+    if family == "board" && ctx.actions.is_empty() {
+        // Board 的合法动作由内核生成，不需要声明式 action。
+    } else if family == "duel" && ctx.actions.is_empty() {
+        diagnostics.push(
+            Diagnostic::error("ORU0318", "至少需要一个 action", first_span(program))
+                .with_help("动作是玩家可以做的选择"),
+        );
+    }
+    if family == "board" && ctx.wins == 0 {
+        // 连线胜负由 board.family 内置规则决定。
+    } else if family == "duel" && ctx.wins == 0 {
+        diagnostics.push(
+            Diagnostic::error("ORU0319", "至少需要一个 win 条件", first_span(program))
+                .with_help("例如 `win { when other.hp <= 0 }`"),
+        );
     }
 
     if ctx.game.is_none() {
@@ -227,19 +329,6 @@ pub fn check(program: &Program) -> Vec<Diagnostic> {
                 .with_help("写 `seats 2`（2–8）"),
         );
     }
-    if ctx.actions.is_empty() {
-        diagnostics.push(
-            Diagnostic::error("ORU0318", "至少需要一个 action", first_span(program))
-                .with_help("动作是玩家可以做的选择"),
-        );
-    }
-    if ctx.wins == 0 {
-        diagnostics.push(
-            Diagnostic::error("ORU0319", "至少需要一个 win 条件", first_span(program))
-                .with_help("例如 `win { when other.hp <= 0 }`"),
-        );
-    }
-
     diagnostics
 }
 
@@ -457,6 +546,8 @@ fn first_span(program: &Program) -> Span {
             | Item::Seats { span, .. }
             | Item::Edition { span, .. }
             | Item::MaxTurns { span, .. }
+            | Item::Family { span, .. }
+            | Item::Board(crate::ast::BoardSpec { span, .. })
             | Item::Resource(Resource { span, .. })
             | Item::Action(Action { span, .. })
             | Item::Trigger(Trigger { span, .. })

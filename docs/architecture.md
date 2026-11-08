@@ -1,6 +1,6 @@
 # Oru 架构草案
 
-Oru 是面向对话场景的规则驱动解释型游戏引擎。M0 先立语言前端，后续按下面的层次推进。
+Oru 是面向对话场景的规则驱动解释型游戏引擎。先立语言前端，再用 duel 与 board 验证 Definition/Family/Kernel 的边界。
 
 ## 分层
 
@@ -8,7 +8,7 @@ Oru 是面向对话场景的规则驱动解释型游戏引擎。M0 先立语言�
 Application    oru CLI、后续 dsh 适配、编辑器/LSP
 Session        开局、推进、存档、回放、版本
 Kernel          Match、Turn、Phase、ActionBatch、Event、Outcome、RNG
-Family          规则解释器：duel / board / card / auction / social...
+Family          封闭 FamilyDefinition/FamilyState：duel / board / card / ...
 Definition      .oru → 不可变 IR（带版本/hash）
 Observation     Match + Perspective → ReadModel（隐藏信息投影）
 Presentation    ReadModel + ViewSpec → 文本 / SVG / PNG
@@ -16,7 +16,8 @@ Presentation    ReadModel + ViewSpec → 文本 / SVG / PNG
 
 约束：
 
-- Kernel 不知道具体 family；
+- Kernel 通过封闭 `FamilyDefinition/FamilyState` 表达具体 family；通用 Match 回合壳只做游标、事件、Outcome、透视投影；
+- `ActionOffer` 与 `step` 使用通用 `ActionTarget`，目标细节属于 family；duel 无 target，board 的 place 使用 cell id；
 - family 不拥有换人/判和/回合推进；
 - Presentation 不读原始 Match；
 - Session 不写规则；
@@ -56,13 +57,13 @@ MatchEnded
 ## 里程碑
 
 - **M0（已完成）**：`.oru` 词法/语法/AST/检查器 + `Oru.toml` + `oru new/init/check`。
-- **M1（当前）**：Definition/Match/Kernel，事件模型，顺序行动，最小 duel 解释器，`oru run`。
-- **M1.5**：更多 action/trigger 能力、回放测试、`oru test` 雏形。
-- **M2**：board/card、同时行动、阶段机。
-- **M2**：同时行动、阶段机、队伍/角色、私密投影。
-- **M3**：`oru test`、黄金回放、`oru fmt`、LSP。
-- **M4**：依赖解析/锁文件/本地与 Git 依赖；注册表最后做。
-- **M5**：dsh-pod 适配与聊天渲染。
+- **M1（已完成）**：Definition/Match/Kernel，事件模型，顺序行动，duel 解释器，`oru run`。
+- **M2（当前/已落地）**：Family 枚举、ActionTarget、board 解释器；以第二种规则 family 验证共享内核。
+- **M2.5**：事件回放、`oru test` 雏形、定义 hash/state version。
+- **M3**：card family、阶段机、同时行动；队伍/角色与私密行动。
+- **M4**：`oru fmt`、黄金回放、LSP。
+- **M5**：依赖解析/锁文件/本地与 Git 依赖；注册表最后做。
+- **M6**：dsh-pod 适配与聊天渲染。
 
 ## 包管理原则
 

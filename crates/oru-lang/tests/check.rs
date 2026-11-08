@@ -118,3 +118,32 @@ fn parser_reports_unclosed_block() {
     let error = parse(tokens).expect_err("parse should fail");
     assert_eq!(error.code, "ORU0205");
 }
+
+#[test]
+fn board_family_does_not_require_duel_win_or_action() {
+    let source = "game \"棋\"\nseats 2\nfamily board\nboard {\n rows 3\n cols 3\n line 3\n}\n";
+    let diagnostics = diagnostics(source);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn board_family_rejects_duel_action() {
+    let source = "game \"棋\"\nseats 2\nfamily board\nboard {\n rows 3\n cols 3\n line 3\n}\naction foo {\n}\n";
+    let diagnostics = diagnostics(source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ORU0340")
+    );
+}
+
+#[test]
+fn board_block_requires_explicit_board_family() {
+    let source = "game \"棋\"\nseats 2\nboard {\n rows 3\n cols 3\n line 3\n}\n";
+    let diagnostics = diagnostics(source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ORU0341")
+    );
+}

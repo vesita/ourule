@@ -94,3 +94,61 @@ fn run_actions_reaches_result() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("击倒了对手"), "{stdout}");
 }
+
+#[test]
+fn run_board_targets_reach_win_and_render_state() {
+    let example =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/moon-chess.oru");
+    let output = Command::new(env!("CARGO_BIN_EXE_oru"))
+        .arg("run")
+        .arg(&example)
+        .arg("--actions")
+        .arg("place:a1,place:b1,place:a2,place:b2,place:a3")
+        .output()
+        .expect("run board");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("连成一线获胜"), "{stdout}");
+    assert!(stdout.contains("X"), "board state should render: {stdout}");
+}
+
+#[test]
+fn interactive_board_commands_accept_action_and_target() {
+    let example =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/moon-chess.oru");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oru"))
+        .arg("run")
+        .arg(&example)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn oru run");
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"act place a1\nact place b1\nquit\n")
+        .expect("write input");
+    let output = child.wait_with_output().expect("wait");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("玩家1 在 a1 落子"), "{stdout}");
+    assert!(stdout.contains("玩家2 在 b1 落子"), "{stdout}");
+}
+
+#[test]
+fn run_board_full_without_line_draws() {
+    let example =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/moon-chess.oru");
+    let output = Command::new(env!("CARGO_BIN_EXE_oru"))
+        .arg("run")
+        .arg(&example)
+        .arg("--actions")
+        .arg("place:a1,place:b1,place:c1,place:a2,place:b2,place:a3,place:c2,place:c3,place:b3")
+        .output()
+        .expect("run board draw");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("棋盘已满，平局"), "{stdout}");
+}

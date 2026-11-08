@@ -1,11 +1,12 @@
 //! 从通过检查的 AST 构造不可变的游戏定义。
 //!
-//! M1 只做 duel 所需的最小定义；Definition 不依赖文件/IO，后续 Session 层负责加载。
+//! Definition 是不可变配置；FamilyDefinition 选择解释器，内容不依赖文件/IO。
 
 use std::collections::BTreeMap;
 
 use oru_lang::ast::{
-    Action, Effect, Expr, Item, Per, Program, Resource, Visibility as AstVisibility, WinRule,
+    Action, BoardSpec, Effect, Expr, Item, Per, Program, Resource, Visibility as AstVisibility,
+    WinRule,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +18,23 @@ pub struct Definition {
     pub actions: Vec<ActionDef>,
     pub triggers: BTreeMap<String, Vec<Effect>>,
     pub wins: Vec<WinDef>,
+    pub family: FamilyDefinition,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FamilyDefinition {
+    Duel(DuelDefinition),
+    Board(BoardDefinition),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuelDefinition;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardDefinition {
+    pub rows: usize,
+    pub cols: usize,
+    pub line_length: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,16 +77,24 @@ impl Definition {
         let mut title = None;
         let mut seats = None;
         let mut max_turns = None;
+        let mut family = None;
+        let mut board = None;
         let mut resources = BTreeMap::new();
         let mut actions = Vec::new();
         let mut triggers: BTreeMap<String, Vec<Effect>> = BTreeMap::new();
         let mut wins = Vec::new();
+        let mut board_seen = false;
 
         for item in &program.items {
             match item {
                 Item::Game { name, .. } => title = Some(name.clone()),
                 Item::Seats { count, .. } => seats = Some(*count),
                 Item::MaxTurns { turns, .. } => max_turns = Some(*turns),
+                Item::Family { family: name, .. } => family = Some(name.clone()),
+                Item::Board(params) => {
+                    board_seen = true;
+                    board = Some(board_definition(params)?);
+                }
                 Item::Edition { .. } => {}
                 Item::Resource(resource) => {
                     resources.insert(resource.name.clone(), resource_def(resource)?);
@@ -89,12 +115,24 @@ impl Definition {
         if !(2..=8).contains(&seats) {
             return Err(DefinitionError(format!("seats 必须在 2–8，拿到 {seats}")));
         }
-        if actions.is_empty() {
-            return Err(DefinitionError("至少需要一个 action".to_string()));
-        }
-        if wins.is_empty() {
-            return Err(DefinitionError("至少需要一个 win".to_string()));
-        }
+        let family = match family.as_deref().unwrap_or("duel") {
+            "duel" => {
+                if board_seen {
+                    return Err(DefinitionError("duel 不能声明 board 块".to_string()));
+                }
+                if actions.is_empty() || wins.is_empty() {
+                    return Err(DefinitionError(
+                        "duel 需要至少一个 action 和 win".to_string(),
+                    ));
+                }
+                FamilyDefinition::Duel(DuelDefinition)
+            }
+            "board" => FamilyDefinition::Board(
+                board
+                    .ok_or_else(|| DefinitionError("family board 需要 board 参数块".to_string()))?,
+            ),
+            other => return Err(DefinitionError(format!("未知 family `{other}`"))),
+        };
 
         Ok(Self {
             title,
@@ -104,7 +142,12 @@ impl Definition {
             actions,
             triggers,
             wins,
+            family,
         })
+    }
+
+    pub fn family(&self) -> &FamilyDefinition {
+        &self.family
     }
 
     pub fn resource(&self, name: &str) -> Option<&ResourceDef> {
@@ -118,6 +161,20 @@ impl Definition {
     pub fn trigger(&self, on: &str) -> &[Effect] {
         self.triggers.get(on).map(Vec::as_slice).unwrap_or(&[])
     }
+}
+
+fn board_definition(board: &BoardSpec) -> Result<BoardDefinition, DefinitionError> {
+    if !(2..=26).contains(&board.rows) || !(2..=26).contains(&board.cols) {
+        return Err(DefinitionError("board rows/cols 必须在 2–26".to_string()));
+    }
+    if board.line_length < 2 || board.line_length > board.rows.max(board.cols) {
+        return Err(DefinitionError("board line 不在合法范围".to_string()));
+    }
+    Ok(BoardDefinition {
+        rows: board.rows,
+        cols: board.cols,
+        line_length: board.line_length,
+    })
 }
 
 fn resource_def(resource: &Resource) -> Result<ResourceDef, DefinitionError> {

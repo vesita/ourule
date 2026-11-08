@@ -37,6 +37,10 @@ pub enum EventKind {
         from: i64,
         to: i64,
     },
+    PiecePlaced {
+        seat: usize,
+        target: String,
+    },
     Said {
         text: String,
     },
@@ -85,6 +89,9 @@ impl Event {
                 }
                 ResourceScope::Game => format!("{name}：{from} → {to}"),
             },
+            EventKind::PiecePlaced { seat, target } => {
+                format!("玩家{} 在 {target} 落子", seat + 1)
+            }
             EventKind::Said { text } => text.clone(),
             EventKind::TurnEnded { seat } => format!("玩家{} 回合结束", seat + 1),
             EventKind::MatchEnded { text, .. } => text.clone(),

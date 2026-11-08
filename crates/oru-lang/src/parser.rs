@@ -30,6 +30,8 @@ impl Parser {
                 Some("seats") => Some(self.parse_seats()?),
                 Some("edition") => Some(self.parse_edition()?),
                 Some("maxTurns") => Some(self.parse_max_turns()?),
+                Some("family") => Some(self.parse_family()?),
+                Some("board") => Some(Item::Board(self.parse_board()?)),
                 Some("resource") => Some(Item::Resource(self.parse_resource()?)),
                 Some("action") => Some(Item::Action(self.parse_action()?)),
                 Some("on") => Some(Item::Trigger(self.parse_trigger()?)),
@@ -98,6 +100,63 @@ impl Parser {
         Ok(Item::MaxTurns {
             turns,
             span: Span::new(start, span.end),
+        })
+    }
+
+    fn parse_family(&mut self) -> Result<Item, Diagnostic> {
+        let start = self.bump_ident("family")?.start;
+        let (family, span) = self.expect_ident("family 后面需要类型，例如 family board")?;
+        self.finish_statement()?;
+        Ok(Item::Family {
+            family,
+            span: Span::new(start, span.end),
+        })
+    }
+
+    fn parse_board(&mut self) -> Result<BoardSpec, Diagnostic> {
+        let start = self.bump_ident("board")?.start;
+        self.expect_lbrace("board 需要 `{ rows ... cols ... }`")?;
+        let mut rows = None;
+        let mut cols = None;
+        let mut line_length = None;
+        loop {
+            self.skip_separators();
+            if self.eat_rbrace() {
+                break;
+            }
+            if self.at_eof() {
+                return Err(Diagnostic::error(
+                    "ORU0228",
+                    "board 块没有闭合",
+                    self.current_span(),
+                ));
+            }
+            let (key, key_span) = self.expect_ident("board 里需要 rows / cols / line")?;
+            match key.as_str() {
+                "rows" => rows = Some(self.expect_usize("rows 需要整数")?.0),
+                "cols" => cols = Some(self.expect_usize("cols 需要整数")?.0),
+                "line" => line_length = Some(self.expect_usize("line 需要整数")?.0),
+                other => {
+                    return Err(Diagnostic::error(
+                        "ORU0229",
+                        format!("board 不认识字段 `{other}`"),
+                        key_span,
+                    )
+                    .with_help("M2 可用：rows / cols / line"));
+                }
+            }
+            self.finish_statement()?;
+        }
+        let end = self.previous_span().end;
+        Ok(BoardSpec {
+            rows: rows.ok_or_else(|| {
+                Diagnostic::error("ORU0230", "board 缺少 rows", Span::new(start, end))
+            })?,
+            cols: cols.ok_or_else(|| {
+                Diagnostic::error("ORU0231", "board 缺少 cols", Span::new(start, end))
+            })?,
+            line_length: line_length.unwrap_or(3),
+            span: Span::new(start, end),
         })
     }
 
@@ -655,6 +714,13 @@ impl Parser {
             }
             None => Err(Diagnostic::error("ORU0221", message, self.current_span())),
         }
+    }
+
+    fn expect_usize(&mut self, message: &str) -> Result<(usize, Span), Diagnostic> {
+        let (value, span) = self.expect_int(message)?;
+        let value = usize::try_from(value)
+            .map_err(|_| Diagnostic::error("ORU0232", "这里需要正整数", span))?;
+        Ok((value, span))
     }
 
     fn expect_signed_int(&mut self, message: &str) -> Result<(i64, Span), Diagnostic> {

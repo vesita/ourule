@@ -1,4 +1,4 @@
-//! `oru` CLI：M0 的项目脚手架与检查器。
+//! `oru` CLI：项目脚手架、规则检查与对局运行。
 //!
 //! 这个二进制只做三件事：创建项目、读取 manifest、把 `.oru` 交给 `oru-lang` 检查。
 //! 运行时/包解析/LSP 都在后续里程碑，不在 CLI 里提前长出来。
@@ -53,9 +53,10 @@ oru —— 面向对话场景的规则驱动游戏语言
   oru check --json     机器可读诊断（CI/编辑器）
   oru run [path]       开局并交互推进（act <id> / state / quit）
   oru run --actions a,b --seed 42   非交互跑一串动作
+  board 动作写成 place:a1；交互可输入 act place a1
   oru --version
 
-M0 检查：词法/语法/名字解析/类型/基础规则约束。
+检查：词法/语法/名字解析/类型/基础规则约束；运行：duel 与 board。
 "
     );
 }
@@ -313,8 +314,9 @@ fn cmd_run(args: &[String]) -> Result<ExitCode, String> {
         let mut steps = Vec::new();
         if let Some(actions) = &actions {
             for action in actions {
+                let (id, target) = parse_action_spec(action);
                 let step = game
-                    .step(action)
+                    .step(id, target)
                     .map_err(|error| format!("动作 `{action}` 失败：{error}"))?;
                 steps.push(step);
             }
@@ -339,13 +341,17 @@ fn cmd_run(args: &[String]) -> Result<ExitCode, String> {
     );
     if let Some(actions) = &actions {
         for action in actions {
+            let (id, target) = parse_action_spec(action);
             let step = game
-                .step(action)
+                .step(id, target)
                 .map_err(|error| format!("动作 `{action}` 失败：{error}"))?;
             print_step(&step);
             if step.model.finished {
                 break;
             }
+        }
+        if let Ok(final_model) = game.read(Perspective::Admin) {
+            print_model(&final_model);
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -381,15 +387,26 @@ fn interactive(game: &mut Match) -> Result<(), String> {
                         .map_err(|error| error.to_string())?,
                 );
             }
-            "help" | "h" => println!("act <id> | state | quit"),
+            "help" | "h" => println!("act <id> [target] | state | quit"),
             other => {
-                let Some(action) = other.strip_prefix("act ") else {
-                    println!("未知命令；用 act <id> / state / quit");
+                let Some(action_text) = other.strip_prefix("act ") else {
+                    println!("未知命令；用 act <id> [target] / state / quit");
                     continue;
                 };
-                match game.step(action.trim()) {
+                let mut parts = action_text.split_whitespace();
+                let Some(action) = parts.next() else {
+                    println!("用法：act <id> [target]");
+                    continue;
+                };
+                let target = parts.next();
+                if parts.next().is_some() {
+                    println!("用法：act <id> [target]");
+                    continue;
+                }
+                match game.step(action, target) {
                     Ok(step) => {
                         print_step(&step);
+                        print_model(&step.model);
                         if step.model.finished {
                             return Ok(());
                         }
@@ -398,6 +415,13 @@ fn interactive(game: &mut Match) -> Result<(), String> {
                 }
             }
         }
+    }
+}
+
+fn parse_action_spec(action: &str) -> (&str, Option<&str>) {
+    match action.split_once(':') {
+        Some((id, target)) => (id, Some(target)),
+        None => (action, None),
     }
 }
 
@@ -421,6 +445,23 @@ fn print_model(model: &ReadModel) {
             .map(|value| value.map_or("?".to_string(), |value| value.to_string()))
             .collect();
         println!("  {name}: {}", values.join(" / "));
+    }
+    if let Some(board) = &model.board {
+        println!("棋盘：");
+        for row in 0..board.rows {
+            let cells: Vec<String> = (0..board.cols)
+                .map(|col| {
+                    let index = row * board.cols + col;
+                    match board.cells[index] {
+                        Some(0) => " X ".to_string(),
+                        Some(1) => " O ".to_string(),
+                        Some(seat) => format!(" {} ", seat + 1),
+                        None => format!(" {} ", cell_name_cli(row, col)),
+                    }
+                })
+                .collect();
+            println!("  {}", cells.join("|"));
+        }
     }
     if model.finished {
         if let Some(outcome) = &model.outcome {
@@ -493,6 +534,14 @@ fn project_target(dir: &Path) -> Result<Target, String> {
             manifest.package.name, manifest.package.version
         )),
     })
+}
+
+fn cell_name_cli(row: usize, col: usize) -> String {
+    format!(
+        "{}{}",
+        char::from(b'a' + u8::try_from(col).unwrap_or(0)),
+        row + 1
+    )
 }
 
 fn valid_package_name(name: &str) -> bool {
