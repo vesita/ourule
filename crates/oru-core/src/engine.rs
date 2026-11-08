@@ -77,12 +77,6 @@ impl std::fmt::Display for RuleError {
 
 impl std::error::Error for RuleError {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Values {
-    Player(Vec<i64>),
-    Game(i64),
-}
-
 #[derive(Debug, Clone)]
 pub struct Match {
     definition: Definition,
@@ -91,7 +85,6 @@ pub struct Match {
     active: usize,
     turn: u32,
     taken: u32,
-    resources: BTreeMap<String, Values>,
     outcome: Option<OutcomeRecord>,
     rng: u64,
     events: Vec<Event>,
@@ -99,7 +92,7 @@ pub struct Match {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FamilyState {
-    Duel,
+    Duel(DuelState),
     Board(BoardState),
 }
 
@@ -115,6 +108,17 @@ pub struct BoardView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardState {
     pub cells: Vec<Option<usize>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuelState {
+    pub resources: BTreeMap<String, ResourceValues>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceValues {
+    Player(Vec<i64>),
+    Game(i64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -160,15 +164,15 @@ impl Match {
         if !(2..=8).contains(&seats) {
             return Err(RuleError::BadSeats(format!("必须是 2–8，拿到 {seats}")));
         }
-        let (family, resources) = match definition.family() {
+        let family = match definition.family() {
             FamilyDefinition::Duel(duel) => {
                 let mut resources = BTreeMap::new();
                 for (name, resource) in &duel.resources {
                     let values = match resource.per {
-                        Per::Player => Values::Player(
+                        Per::Player => ResourceValues::Player(
                             (0..seats).map(|_| clamp(resource, resource.init)).collect(),
                         ),
-                        Per::Game => Values::Game(clamp(resource, resource.init)),
+                        Per::Game => ResourceValues::Game(clamp(resource, resource.init)),
                         Per::Team => {
                             return Err(RuleError::Definition(DefinitionError(
                                 "当前运行时不支持 per team 资源".to_string(),
@@ -177,14 +181,11 @@ impl Match {
                     };
                     resources.insert(name.clone(), values);
                 }
-                (FamilyState::Duel, resources)
+                FamilyState::Duel(DuelState { resources })
             }
-            FamilyDefinition::Board(board) => (
-                FamilyState::Board(BoardState {
-                    cells: vec![None; board.rows.saturating_mul(board.cols)],
-                }),
-                BTreeMap::new(),
-            ),
+            FamilyDefinition::Board(board) => FamilyState::Board(BoardState {
+                cells: vec![None; board.rows.saturating_mul(board.cols)],
+            }),
         };
         let mut game = Self {
             definition,
@@ -193,7 +194,6 @@ impl Match {
             active: 0,
             turn: 1,
             taken: 0,
-            resources,
             outcome: None,
             rng: if seed == 0 {
                 0x9E37_79B9_7F4A_7C15
@@ -354,12 +354,20 @@ impl Match {
 
     pub fn read(&self, perspective: Perspective) -> Result<ReadModel, RuleError> {
         let resources = self
-            .duel_definition()
+            .duel_state()
             .into_iter()
-            .flat_map(|duel| duel.resources.iter())
+            .flat_map(|state| state.resources.iter())
+            .filter_map(|(name, _)| {
+                self.duel_definition()
+                    .and_then(|duel| duel.resource(name))
+                    .map(|resource| (name, resource))
+            })
             .map(|(name, resource)| {
-                let values = match self.resources.get(name) {
-                    Some(Values::Player(values)) => values
+                let values = match self
+                    .duel_state()
+                    .and_then(|state| state.resources.get(name))
+                {
+                    Some(ResourceValues::Player(values)) => values
                         .iter()
                         .enumerate()
                         .map(|(seat, value)| {
@@ -370,7 +378,7 @@ impl Match {
                             }
                         })
                         .collect(),
-                    Some(Values::Game(value)) => {
+                    Some(ResourceValues::Game(value)) => {
                         vec![if visible(resource.visibility, perspective, usize::MAX) {
                             Some(*value)
                         } else {
@@ -648,8 +656,22 @@ impl Match {
 
     fn duel_definition(&self) -> Option<&crate::definition::DuelDefinition> {
         match (self.definition.family(), &self.family) {
-            (FamilyDefinition::Duel(duel), FamilyState::Duel) => Some(duel),
+            (FamilyDefinition::Duel(duel), FamilyState::Duel(_)) => Some(duel),
             _ => None,
+        }
+    }
+
+    fn duel_state(&self) -> Option<&DuelState> {
+        match &self.family {
+            FamilyState::Duel(state) => Some(state),
+            FamilyState::Board(_) => None,
+        }
+    }
+
+    fn duel_state_mut(&mut self) -> Option<&mut DuelState> {
+        match &mut self.family {
+            FamilyState::Duel(state) => Some(state),
+            FamilyState::Board(_) => None,
         }
     }
 
@@ -657,16 +679,22 @@ impl Match {
         match path.root {
             PathRoot::SelfSeat => self.player_value(self.active, &path.name),
             PathRoot::Other => self.player_value((self.active + 1) % self.seats, &path.name),
-            PathRoot::Game => match self.resources.get(&path.name) {
-                Some(Values::Game(value)) => Ok(*value),
+            PathRoot::Game => match self
+                .duel_state()
+                .and_then(|state| state.resources.get(&path.name))
+            {
+                Some(ResourceValues::Game(value)) => Ok(*value),
                 _ => Err(RuleError::Eval(format!("game 资源 `{}` 不存在", path.name))),
             },
         }
     }
 
     fn player_value(&self, seat: usize, name: &str) -> Result<i64, RuleError> {
-        match self.resources.get(name) {
-            Some(Values::Player(values)) => values
+        match self
+            .duel_state()
+            .and_then(|state| state.resources.get(name))
+        {
+            Some(ResourceValues::Player(values)) => values
                 .get(seat)
                 .copied()
                 .ok_or_else(|| RuleError::Eval(format!("玩家资源 `{name}` 没有座位 {seat}"))),
@@ -690,14 +718,19 @@ impl Match {
             (AstVisibility::Private, PathRoot::Game) => Visibility::Private(self.active),
         };
         let next = clamp(resource, value);
-        match (scope, self.resources.get_mut(&name)) {
-            (PathRoot::Game, Some(Values::Game(value))) => *value = next,
-            (PathRoot::SelfSeat | PathRoot::Other, Some(Values::Player(values))) => {
-                let seat = match scope {
-                    PathRoot::SelfSeat => self.active,
-                    PathRoot::Other => (self.active + 1) % self.seats,
-                    PathRoot::Game => unreachable!(),
-                };
+        let target_seat = match scope {
+            PathRoot::SelfSeat => Some(self.active),
+            PathRoot::Other => Some((self.active + 1) % self.seats),
+            PathRoot::Game => None,
+        };
+        match (
+            scope,
+            self.duel_state_mut()
+                .and_then(|state| state.resources.get_mut(&name)),
+        ) {
+            (PathRoot::Game, Some(ResourceValues::Game(value))) => *value = next,
+            (PathRoot::SelfSeat | PathRoot::Other, Some(ResourceValues::Player(values))) => {
+                let seat = target_seat.expect("player path has a seat");
                 let Some(slot) = values.get_mut(seat) else {
                     return Err(RuleError::Eval("座位越界".to_string()));
                 };
@@ -857,7 +890,7 @@ fn parse_cell(target: &str, def: &BoardDefinition) -> Option<usize> {
 fn board_full(state: &FamilyState) -> bool {
     match state {
         FamilyState::Board(board) => board.cells.iter().all(Option::is_some),
-        FamilyState::Duel => false,
+        FamilyState::Duel(_) => false,
     }
 }
 

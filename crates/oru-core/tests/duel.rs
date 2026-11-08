@@ -66,6 +66,28 @@ fn start_emits_match_and_turn_events() {
 }
 
 #[test]
+fn duel_mutable_resources_live_inside_duel_family_state() {
+    let game = Match::start(definition(DUEL), None, 42).expect("start");
+    let oru_core::FamilyState::Duel(duel) = game.family_state() else {
+        panic!("duel Definition must produce DuelState");
+    };
+    assert!(matches!(
+        duel.resources.get("hp"),
+        Some(oru_core::ResourceValues::Player(values)) if values == &[12, 12]
+    ));
+    assert!(matches!(
+        duel.resources.get("energy"),
+        Some(oru_core::ResourceValues::Player(values)) if values == &[2, 2]
+    ));
+    assert!(
+        game.read(Perspective::Admin)
+            .unwrap()
+            .resources
+            .contains_key("hp")
+    );
+}
+
+#[test]
 fn slash_changes_resources_and_advances_turn() {
     let mut game = Match::start(definition(DUEL), None, 42).expect("start");
     let step = game.step("slash", None).expect("step");

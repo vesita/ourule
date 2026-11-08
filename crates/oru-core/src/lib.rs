@@ -11,7 +11,7 @@ pub use definition::{
     ResourceDef, WinDef,
 };
 pub use engine::{
-    ActionOffer, ActionTarget, BoardState, BoardView, FamilyState, Match, OutcomeKind,
-    OutcomeRecord, Perspective, ReadModel, ResourceView, RuleError, Step,
+    ActionOffer, ActionTarget, BoardState, BoardView, DuelState, FamilyState, Match, OutcomeKind,
+    OutcomeRecord, Perspective, ReadModel, ResourceValues, ResourceView, RuleError, Step,
 };
 pub use event::{Event, EventKind, ResourceScope, Visibility};
