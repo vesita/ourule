@@ -199,8 +199,10 @@ fn board_definition(board: &BoardSpec) -> Result<BoardDefinition, DefinitionErro
     if !(2..=26).contains(&board.rows) || !(2..=26).contains(&board.cols) {
         return Err(DefinitionError("board rows/cols 必须在 2–26".to_string()));
     }
-    if board.line_length < 2 || board.line_length > board.rows.max(board.cols) {
-        return Err(DefinitionError("board line 不在合法范围".to_string()));
+    if board.line_length < 2 || board.line_length > board.rows.min(board.cols) {
+        return Err(DefinitionError(
+            "board line 必须在 2..=min(rows, cols)，否则无法形成获胜线".to_string(),
+        ));
     }
     Ok(BoardDefinition {
         rows: board.rows,
@@ -211,7 +213,9 @@ fn board_definition(board: &BoardSpec) -> Result<BoardDefinition, DefinitionErro
 
 fn resource_def(resource: &Resource) -> Result<ResourceDef, DefinitionError> {
     if resource.per == Per::Team {
-        return Err(DefinitionError("M1 还不支持 per team 资源".to_string()));
+        return Err(DefinitionError(
+            "当前运行时还不支持 per team 资源".to_string(),
+        ));
     }
     Ok(ResourceDef {
         name: resource.name.clone(),

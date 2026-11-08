@@ -135,7 +135,9 @@ win {
 "#;
     let mut game = Match::start(definition(source), None, 1).expect("start");
     game.step("pass", None).expect("first");
+    assert_eq!(game.taken(), 1, "每个成功动作都记入帧计数");
     game.step("pass", None).expect("second");
+    assert_eq!(game.taken(), 2);
     let outcome = game.outcome().expect("draw");
     assert_eq!(outcome.kind, OutcomeKind::Draw);
 }
@@ -160,7 +162,7 @@ win {
     let mut game = Match::start(definition(source), None, 1).expect("start");
     let step = game.step("wait", None).expect("step");
     assert_eq!(game.outcome().unwrap().kind, OutcomeKind::Draw);
-    assert_eq!(game.taken(), 0, "终止 turnEnd 不算已完成一帧");
+    assert_eq!(game.taken(), 1, "已接受的动作计数，即使 turnEnd 结束对局");
     assert!(
         !step
             .events
@@ -237,4 +239,51 @@ win {
             .iter()
             .any(|event| event.text().contains("secret"))
     );
+}
+
+#[test]
+fn boolean_operators_short_circuit() {
+    let source = r#"
+game "short-circuit"
+seats 2
+resource hp {
+  per player
+  init 1
+}
+action pass {
+  when false and (1 / 0 == 0)
+}
+win {
+  when false
+}
+"#;
+    let game = Match::start(definition(source), None, 1).expect("start");
+    assert!(
+        game.offers().unwrap().is_empty(),
+        "right side of false and is not evaluated"
+    );
+}
+
+#[test]
+fn integer_overflow_returns_rule_error_without_panicking() {
+    let source = r#"
+game "overflow"
+seats 2
+resource value {
+  per game
+  init 0
+}
+action bump {
+  do {
+    game.value = (-9223372036854775807 - 1) / -1
+  }
+}
+win {
+  when false
+}
+"#;
+    let mut game = Match::start(definition(source), None, 1).expect("start");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| game.step("bump", None)));
+    assert!(result.is_ok(), "overflow must not panic");
+    assert!(result.unwrap().is_err(), "overflow should be a rule error");
 }

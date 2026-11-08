@@ -171,7 +171,7 @@ impl Match {
                         Per::Game => Values::Game(clamp(resource, resource.init)),
                         Per::Team => {
                             return Err(RuleError::Definition(DefinitionError(
-                                "M2 不支持 per team 资源".to_string(),
+                                "当前运行时不支持 per team 资源".to_string(),
                             )));
                         }
                     };
@@ -328,6 +328,7 @@ impl Match {
         }
 
         let actor = self.active;
+        self.taken = self.taken.saturating_add(1);
         self.push_event(
             Visibility::Public,
             EventKind::ActionResolved {
@@ -347,9 +348,8 @@ impl Match {
                 .map(|duel| duel.trigger("turnEnd").to_vec())
                 .unwrap_or_default();
             self.apply_effects(&turn_end, Some(actor), Some(&action.label))?;
-            self.complete_action(actor)?;
         }
-        Ok(())
+        self.complete_action(actor)
     }
 
     pub fn read(&self, perspective: Perspective) -> Result<ReadModel, RuleError> {
@@ -515,6 +515,7 @@ impl Match {
             board.cells[index] = Some(actor);
             board_winner(board, def, actor)
         };
+        self.taken = self.taken.saturating_add(1);
         let label = format!("落子 {target}");
         self.push_event(
             Visibility::Public,
@@ -543,15 +544,10 @@ impl Match {
 
     /// Family 结算完成后统一收尾：记录回合结束、检查上限/Family 终止条件、推进游标。
     fn complete_action(&mut self, actor: usize) -> Result<(), RuleError> {
-        if self.outcome.is_some() {
-            return Ok(());
-        }
         self.push_event(Visibility::Public, EventKind::TurnEnded { seat: actor });
-        self.taken = self.taken.saturating_add(1);
         if self.outcome.is_some() {
             return Ok(());
         }
-        self.advance_turn();
         let limit = self
             .definition
             .max_turns
@@ -561,6 +557,7 @@ impl Match {
         } else if matches!(self.family, FamilyState::Board(_)) && board_full(&self.family) {
             self.finish(OutcomeKind::Draw, None, "棋盘已满，平局".to_string());
         } else {
+            self.advance_turn();
             self.push_event(
                 Visibility::Public,
                 EventKind::TurnStarted {
@@ -748,10 +745,30 @@ impl Match {
                 let value = self.eval(expr)?;
                 match op {
                     UnaryOp::Not => Ok(Value::Bool(!value.as_bool()?)),
-                    UnaryOp::Neg => Ok(Value::Int(-value.as_int()?)),
+                    UnaryOp::Neg => value
+                        .as_int()?
+                        .checked_neg()
+                        .map(Value::Int)
+                        .ok_or_else(|| RuleError::Eval("整数取负溢出".to_string())),
                 }
             }
             ExprKind::Binary { op, left, right } => {
+                if *op == BinaryOp::And {
+                    let left = self.eval(left)?.as_bool()?;
+                    return if left {
+                        Ok(Value::Bool(self.eval(right)?.as_bool()?))
+                    } else {
+                        Ok(Value::Bool(false))
+                    };
+                }
+                if *op == BinaryOp::Or {
+                    let left = self.eval(left)?.as_bool()?;
+                    return if left {
+                        Ok(Value::Bool(true))
+                    } else {
+                        Ok(Value::Bool(self.eval(right)?.as_bool()?))
+                    };
+                }
                 let left = self.eval(left)?;
                 let right = self.eval(right)?;
                 match op {
@@ -759,11 +776,18 @@ impl Match {
                     BinaryOp::Sub => Ok(Value::Int(left.as_int()?.saturating_sub(right.as_int()?))),
                     BinaryOp::Mul => Ok(Value::Int(left.as_int()?.saturating_mul(right.as_int()?))),
                     BinaryOp::Div => {
+                        let dividend = left.as_int()?;
                         let divisor = right.as_int()?;
-                        if divisor == 0 {
-                            return Err(RuleError::Eval("除以零".to_string()));
-                        }
-                        Ok(Value::Int(left.as_int()? / divisor))
+                        dividend
+                            .checked_div(divisor)
+                            .map(Value::Int)
+                            .ok_or_else(|| {
+                                if divisor == 0 {
+                                    RuleError::Eval("除以零".to_string())
+                                } else {
+                                    RuleError::Eval("整数除法溢出".to_string())
+                                }
+                            })
                     }
                     BinaryOp::Eq => Ok(Value::Bool(left == right)),
                     BinaryOp::Ne => Ok(Value::Bool(left != right)),
@@ -771,14 +795,15 @@ impl Match {
                     BinaryOp::Le => Ok(Value::Bool(left.as_int()? <= right.as_int()?)),
                     BinaryOp::Gt => Ok(Value::Bool(left.as_int()? > right.as_int()?)),
                     BinaryOp::Ge => Ok(Value::Bool(left.as_int()? >= right.as_int()?)),
-                    BinaryOp::And => Ok(Value::Bool(left.as_bool()? && right.as_bool()?)),
-                    BinaryOp::Or => Ok(Value::Bool(left.as_bool()? || right.as_bool()?)),
+                    BinaryOp::And | BinaryOp::Or => {
+                        unreachable!("short-circuit operators returned above")
+                    }
                 }
             }
         }
     }
 
-    /// 保留给后续 roll/随机效果；目前 M1 没有随机效果。
+    /// 保留给后续 family 的随机效果；当前规则语言尚未暴露 roll。
     #[allow(dead_code)]
     fn next_rand(&mut self) -> u64 {
         let mut x = self.rng;

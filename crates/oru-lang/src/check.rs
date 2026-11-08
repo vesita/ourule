@@ -113,10 +113,10 @@ pub fn check(program: &Program) -> Vec<Diagnostic> {
                         board.span,
                     ));
                 }
-                if board.line_length < 2 || board.line_length > board.rows.max(board.cols) {
+                if board.line_length < 2 || board.line_length > board.rows.min(board.cols) {
                     diagnostics.push(Diagnostic::error(
                         "ORU0338",
-                        "board.line 必须至少为 2，且不能大于棋盘最长边",
+                        "board.line 必须在 2..=min(rows, cols)，否则无法形成获胜线",
                         board.span,
                     ));
                 }
@@ -146,7 +146,7 @@ pub fn check(program: &Program) -> Vec<Diagnostic> {
                     diagnostics.push(
                         Diagnostic::error(
                             "ORU0309",
-                            "M2 还不支持 team 作用域资源",
+                            "当前 family 不支持 team 作用域资源",
                             resource.per_span.unwrap_or(resource.name_span),
                         )
                         .with_help("先用 player / game；team 作为后续 Family 能力加入"),
