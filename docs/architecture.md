@@ -18,7 +18,8 @@ Presentation    ReadModel + ViewSpec → 文本 / SVG / PNG
 
 - `Definition` 只保留游戏名、座位数、回合上限和 `FamilyDefinition`；duel 专属 resources/actions/triggers/wins 放在 `DuelDefinition`，board 参数放在 `BoardDefinition`；
 - Kernel 通过封闭 `FamilyDefinition/FamilyState` 表达具体 family；通用 Match 回合壳只做游标、事件、Outcome、透视投影；
-- `ActionOffer` 与 `step` 使用通用 `ActionTarget`，目标细节属于 family；duel 无 target，board 的 place 使用 cell id；
+- `ActionOffer` 与 `step` 使用通用 `ActionTarget`，目标细节属于 family；duel 无 target，board 的 place 使用 cell id；`step` 必须传入由当前 Match 铸造、绑定 active seat/turn 的 `ActorSeat`；
+- `ReadModel.offers` 按 perspective 投影：条件引用 private resource 时，只对可见该资源的座位/Admin 计算和返回 offer；Spectator 不能经 offers 或 `step` 结果探测 private 条件；private game resource 对普通 Seat/Spectator 隐藏，事件 owner 使用不可映射到玩家的私有 sentinel；
 - family 不拥有换人/判和/回合推进；
 - Presentation 不读原始 Match；
 - Session 不写规则；

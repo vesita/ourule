@@ -316,7 +316,13 @@ fn cmd_run(args: &[String]) -> Result<ExitCode, String> {
             for action in actions {
                 let (id, target) = parse_action_spec(action);
                 let step = game
-                    .step(id, target)
+                    .step(
+                        game.actor(game.active())
+                            .map_err(|error| error.to_string())?,
+                        id,
+                        target,
+                        Perspective::Admin,
+                    )
                     .map_err(|error| format!("动作 `{action}` 失败：{error}"))?;
                 steps.push(step);
             }
@@ -343,7 +349,13 @@ fn cmd_run(args: &[String]) -> Result<ExitCode, String> {
         for action in actions {
             let (id, target) = parse_action_spec(action);
             let step = game
-                .step(id, target)
+                .step(
+                    game.actor(game.active())
+                        .map_err(|error| error.to_string())?,
+                    id,
+                    target,
+                    Perspective::Admin,
+                )
                 .map_err(|error| format!("动作 `{action}` 失败：{error}"))?;
             print_step(&step);
             if step.model.finished {
@@ -403,7 +415,13 @@ fn interactive(game: &mut Match) -> Result<(), String> {
                     println!("用法：act <id> [target]");
                     continue;
                 }
-                match game.step(action, target) {
+                match game.step(
+                    game.actor(game.active())
+                        .map_err(|error| error.to_string())?,
+                    action,
+                    target,
+                    Perspective::Admin,
+                ) {
                     Ok(step) => {
                         print_step(&step);
                         print_model(&step.model);

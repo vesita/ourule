@@ -1,6 +1,21 @@
 use oru_core::{Definition, Match, OutcomeKind, Perspective, RuleError};
 use oru_lang::check_source;
 
+fn step(game: &mut Match, action: &str, target: Option<&str>) -> Result<oru_core::Step, RuleError> {
+    let actor = game.actor(game.active())?;
+    game.step(actor, action, target, Perspective::Admin)
+}
+
+fn step_as(
+    game: &mut Match,
+    actor_seat: usize,
+    action: &str,
+    perspective: Perspective,
+) -> Result<oru_core::Step, RuleError> {
+    let actor = game.actor(actor_seat)?;
+    game.step(actor, action, None, perspective)
+}
+
 fn definition(source: &str) -> Definition {
     let program = check_source(source).expect("source should check");
     Definition::from_program(&program).expect("definition should build")
@@ -76,7 +91,7 @@ fn duel_state_and_resource_view_start_consistently() {
 #[test]
 fn slash_changes_resources_and_advances_turn() {
     let mut game = Match::start(definition(DUEL), None, 42).expect("start");
-    let step = game.step("slash", None).expect("step");
+    let step = step(&mut game, "slash", None).expect("step");
     assert!(
         step.events
             .iter()
@@ -96,7 +111,7 @@ fn slash_changes_resources_and_advances_turn() {
 fn invalid_action_is_atomic() {
     let mut game = Match::start(definition(DUEL), None, 42).expect("start");
     let before = game.read(Perspective::Admin).expect("read");
-    let error = game.step("nope", None).expect_err("unknown action");
+    let error = step(&mut game, "nope", None).expect_err("unknown action");
     assert!(matches!(error, RuleError::UnknownAction(_)));
     let after = game.read(Perspective::Admin).expect("read");
     assert_eq!(before.events, after.events);
@@ -117,7 +132,7 @@ fn game_reaches_win() {
         } else {
             "meditate"
         };
-        game.step(action, None).expect("step");
+        step(&mut game, action, None).expect("step");
     }
     let outcome = game.outcome().expect("should finish");
     assert_eq!(outcome.kind, OutcomeKind::Win);
@@ -142,9 +157,9 @@ win {
 }
 "#;
     let mut game = Match::start(definition(source), None, 1).expect("start");
-    game.step("pass", None).expect("first");
+    step(&mut game, "pass", None).expect("first");
     assert_eq!(game.taken(), 1, "每个成功动作都记入帧计数");
-    game.step("pass", None).expect("second");
+    step(&mut game, "pass", None).expect("second");
     assert_eq!(game.taken(), 2);
     let outcome = game.outcome().expect("draw");
     assert_eq!(outcome.kind, OutcomeKind::Draw);
@@ -168,7 +183,7 @@ win {
 }
 "#;
     let mut game = Match::start(definition(source), None, 1).expect("start");
-    let step = game.step("wait", None).expect("step");
+    let step = step(&mut game, "wait", None).expect("step");
     assert_eq!(game.outcome().unwrap().kind, OutcomeKind::Draw);
     assert_eq!(game.taken(), 1, "已接受的动作计数，即使 turnEnd 结束对局");
     assert!(
@@ -180,14 +195,17 @@ win {
 }
 
 #[test]
-fn private_resource_hides_other_values() {
+fn private_resource_hides_other_values_and_filters_action_offers() {
     let source = r#"
 game "private"
 seats 2
 resource secret {
   per player
-  init 3
+  init 1
   visibility private
+}
+action probe "probe" {
+  when self.secret == 1
 }
 action pass {
   do { }
@@ -198,11 +216,15 @@ win {
 "#;
     let game = Match::start(definition(source), None, 1).expect("start");
     let admin = game.read(Perspective::Admin).expect("admin");
-    assert_eq!(admin.resources["secret"].values, vec![Some(3), Some(3)]);
+    assert_eq!(admin.resources["secret"].values, vec![Some(1), Some(1)]);
+    assert!(admin.offers.iter().any(|offer| offer.id == "probe"));
     let seat0 = game.read(Perspective::Seat(0)).expect("seat");
-    assert_eq!(seat0.resources["secret"].values, vec![Some(3), None]);
+    assert_eq!(seat0.resources["secret"].values, vec![Some(1), None]);
+    assert!(seat0.offers.iter().any(|offer| offer.id == "probe"));
     let spectator = game.read(Perspective::Spectator).expect("spectator");
     assert_eq!(spectator.resources["secret"].values, vec![None, None]);
+    assert!(!spectator.offers.iter().any(|offer| offer.id == "probe"));
+    assert!(spectator.offers.iter().any(|offer| offer.id == "pass"));
 }
 
 #[test]
@@ -225,7 +247,7 @@ win {
 }
 "#;
     let mut game = Match::start(definition(source), None, 1).expect("start");
-    game.step("spend", None).expect("step");
+    step_as(&mut game, 0, "spend", Perspective::Seat(0)).expect("step");
     let seat0 = game.read(Perspective::Seat(0)).unwrap();
     let seat1 = game.read(Perspective::Seat(1)).unwrap();
     let admin = game.read(Perspective::Admin).unwrap();
@@ -247,6 +269,65 @@ win {
             .iter()
             .any(|event| event.text().contains("secret"))
     );
+}
+
+#[test]
+fn stale_actor_capability_is_rejected_without_mutation() {
+    let source = r#"
+game "actor"
+seats 2
+resource count {
+  per game
+  init 0
+}
+action tick {
+  do { game.count += 1 }
+}
+win {
+  when false
+}
+"#;
+    let mut game = Match::start(definition(source), None, 1).expect("start");
+    let stale = game.actor(0).expect("actor at turn 1");
+    game.step(stale.clone(), "tick", None, Perspective::Seat(0))
+        .expect("turn 1");
+    let before = game.read(Perspective::Admin).expect("before");
+    let result = game.step(stale, "tick", None, Perspective::Seat(1));
+    assert!(result.is_err(), "stale actor cannot replay its capability");
+    assert_eq!(game.read(Perspective::Admin).unwrap(), before);
+
+    let other = Match::start(definition(source), None, 1).expect("second match");
+    let foreign = other.actor(0).unwrap();
+    let error = game
+        .step(foreign, "tick", None, Perspective::Seat(0))
+        .unwrap_err();
+    assert!(matches!(error, RuleError::NotAllowed { .. }));
+    assert_eq!(game.read(Perspective::Admin).unwrap(), before);
+}
+
+#[test]
+fn spectator_cannot_probe_private_action_through_step() {
+    let source = r#"
+game "private-oracle"
+seats 2
+resource secret {
+  per player
+  init 1
+  visibility private
+}
+action probe { when self.secret == 1 }
+win { when false }
+"#;
+    let mut game = Match::start(definition(source), None, 1).expect("start");
+    let spectator = game.read(Perspective::Spectator).unwrap();
+    assert!(!spectator.offers.iter().any(|offer| offer.id == "probe"));
+    let actor = game.actor(0).unwrap();
+    let before = game.read(Perspective::Admin).unwrap();
+    let error = game
+        .step(actor, "probe", None, Perspective::Spectator)
+        .expect_err("spectator view must not probe private action");
+    assert!(matches!(error, RuleError::NotAllowed { .. }));
+    assert_eq!(game.read(Perspective::Admin).unwrap(), before);
 }
 
 #[test]
@@ -291,7 +372,9 @@ win {
 }
 "#;
     let mut game = Match::start(definition(source), None, 1).expect("start");
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| game.step("bump", None)));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        step(&mut game, "bump", None)
+    }));
     assert!(result.is_ok(), "overflow must not panic");
     assert!(result.unwrap().is_err(), "overflow should be a rule error");
 }

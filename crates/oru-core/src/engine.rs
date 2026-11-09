@@ -1,6 +1,7 @@
 //! M1/M2 内核：Match 状态、Family 分派、回合游标、纯函数 step、事件流、只读投影。
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use oru_lang::ast::{
     BinaryOp, Effect, EffectKind, Expr, ExprKind, Outcome as AstOutcome, Path, PathRoot, Per,
@@ -43,6 +44,14 @@ pub struct ActionTarget {
     pub label: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActorSeat {
+    seat: usize,
+    turn: u32,
+    active: usize,
+    authority: Arc<()>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Perspective {
     Admin,
@@ -79,7 +88,7 @@ impl std::error::Error for RuleError {}
 
 #[derive(Debug, Clone)]
 pub struct Match {
-    definition: Definition,
+    definition: Arc<Definition>,
     family: FamilyState,
     seats: usize,
     active: usize,
@@ -88,6 +97,7 @@ pub struct Match {
     outcome: Option<OutcomeRecord>,
     rng: u64,
     events: Vec<Event>,
+    authority: Arc<()>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -188,7 +198,7 @@ impl Match {
             }),
         };
         let mut game = Self {
-            definition,
+            definition: Arc::new(definition),
             family,
             seats,
             active: 0,
@@ -201,6 +211,7 @@ impl Match {
                 seed
             },
             events: Vec::new(),
+            authority: Arc::new(()),
         };
         game.push_event(Visibility::Public, EventKind::MatchStarted { seats });
         let start_effects = game
@@ -226,7 +237,7 @@ impl Match {
     }
 
     pub fn definition(&self) -> &Definition {
-        &self.definition
+        self.definition.as_ref()
     }
 
     pub fn seats(&self) -> usize {
@@ -253,7 +264,32 @@ impl Match {
         &self.events
     }
 
+    pub fn actor(&self, seat: usize) -> Result<ActorSeat, RuleError> {
+        if seat >= self.seats {
+            return Err(RuleError::BadSeats(format!(
+                "行动者座位 {seat} 超出本局 {} 个座位",
+                self.seats
+            )));
+        }
+        if seat != self.active {
+            return Err(RuleError::NotAllowed {
+                action: "act-as".to_string(),
+                reason: format!("当前轮到座位 {}，不能由座位 {seat} 行动", self.active),
+            });
+        }
+        Ok(ActorSeat {
+            seat,
+            turn: self.turn,
+            active: self.active,
+            authority: self.authority.clone(),
+        })
+    }
+
     pub fn offers(&self) -> Result<Vec<ActionOffer>, RuleError> {
+        self.offers_for(Perspective::Admin)
+    }
+
+    pub fn offers_for(&self, perspective: Perspective) -> Result<Vec<ActionOffer>, RuleError> {
         if self.outcome.is_some() {
             return Ok(Vec::new());
         }
@@ -270,6 +306,11 @@ impl Match {
             .duel_definition()
             .ok_or_else(|| RuleError::Eval("Duel family state mismatch".to_string()))?;
         for action in &duel.actions {
+            if let Some(when) = &action.when
+                && !expr_visible(when, duel, self.active, self.seats, perspective)
+            {
+                continue;
+            }
             let allowed = match &action.when {
                 None => true,
                 Some(when) => self.eval(when)?.as_bool()?,
@@ -286,12 +327,42 @@ impl Match {
     }
 
     /// 推进一帧：一帧只处理一个动作；失败时原 Match 完全不变。
-    pub fn step(&mut self, action_id: &str, target: Option<&str>) -> Result<Step, RuleError> {
+    pub fn step(
+        &mut self,
+        actor: ActorSeat,
+        action_id: &str,
+        target: Option<&str>,
+        perspective: Perspective,
+    ) -> Result<Step, RuleError> {
+        if !Arc::ptr_eq(&actor.authority, &self.authority)
+            || actor.seat != self.active
+            || actor.active != self.active
+            || actor.turn != self.turn
+        {
+            return Err(RuleError::NotAllowed {
+                action: action_id.to_string(),
+                reason: format!("ActorSeat 不属于本局或已过期；当前座位 {}", self.active),
+            });
+        }
+        if let Some(duel) = self.duel_definition()
+            && let Some(action) = duel.action(action_id)
+            && let Some(condition) = &action.when
+            && !expr_visible(condition, duel, self.active, self.seats, perspective)
+        {
+            return Err(RuleError::NotAllowed {
+                action: action_id.to_string(),
+                reason: "依赖私有资源的动作只能由座位视角执行".to_string(),
+            });
+        }
         let mut next = self.clone();
         let start = next.events.len();
         next.step_inner(action_id, target)?;
-        let model = next.read(Perspective::Admin)?;
-        let events = next.events[start..].to_vec();
+        let model = next.read(perspective)?;
+        let events = next.events[start..]
+            .iter()
+            .filter(|event| event_visible(event.visibility, perspective))
+            .cloned()
+            .collect();
         *self = next;
         Ok(Step { events, model })
     }
@@ -349,6 +420,14 @@ impl Match {
     }
 
     pub fn read(&self, perspective: Perspective) -> Result<ReadModel, RuleError> {
+        if let Perspective::Seat(seat) = perspective
+            && seat >= self.seats
+        {
+            return Err(RuleError::BadSeats(format!(
+                "视角座位 {seat} 超出本局 {} 个座位",
+                self.seats
+            )));
+        }
         let resources = self
             .duel_state()
             .into_iter()
@@ -367,7 +446,17 @@ impl Match {
                         .iter()
                         .enumerate()
                         .map(|(seat, value)| {
-                            if visible(resource.visibility, perspective, seat) {
+                            if resource_visible_for(
+                                resource,
+                                &Path {
+                                    root: PathRoot::SelfSeat,
+                                    name: name.clone(),
+                                    span: oru_lang::span::Span::empty(0),
+                                },
+                                seat,
+                                self.seats,
+                                perspective,
+                            ) {
                                 Some(*value)
                             } else {
                                 None
@@ -375,7 +464,17 @@ impl Match {
                         })
                         .collect(),
                     Some(ResourceValues::Game(value)) => {
-                        vec![if visible(resource.visibility, perspective, usize::MAX) {
+                        vec![if resource_visible_for(
+                            resource,
+                            &Path {
+                                root: PathRoot::Game,
+                                name: name.clone(),
+                                span: oru_lang::span::Span::empty(0),
+                            },
+                            self.active,
+                            self.seats,
+                            perspective,
+                        ) {
                             Some(*value)
                         } else {
                             None
@@ -421,7 +520,7 @@ impl Match {
             taken: self.taken,
             finished: self.outcome.is_some(),
             outcome: self.outcome.clone(),
-            offers: self.offers()?,
+            offers: self.offers_for(perspective)?,
             resources,
             board,
             events: self
@@ -705,13 +804,16 @@ impl Match {
             .duel_definition()
             .and_then(|duel| duel.resource(&name))
             .ok_or_else(|| RuleError::Eval(format!("资源 `{name}` 不存在")))?;
-        let visibility = match (resource.visibility, path.root) {
-            (AstVisibility::Public, _) => Visibility::Public,
-            (AstVisibility::Private, PathRoot::SelfSeat) => Visibility::Private(self.active),
-            (AstVisibility::Private, PathRoot::Other) => {
+        let visibility = match (resource.visibility, path.root, resource.per) {
+            (AstVisibility::Public, _, _) => Visibility::Public,
+            (AstVisibility::Private, PathRoot::SelfSeat, Per::Player) => {
+                Visibility::Private(self.active)
+            }
+            (AstVisibility::Private, PathRoot::Other, Per::Player) => {
                 Visibility::Private((self.active + 1) % self.seats)
             }
-            (AstVisibility::Private, PathRoot::Game) => Visibility::Private(self.active),
+            (AstVisibility::Private, PathRoot::Game, Per::Game) => Visibility::Private(usize::MAX),
+            _ => return Err(RuleError::Eval("资源路径与作用域不匹配".to_string())),
         };
         let next = clamp(resource, value);
         let target_seat = match scope {
@@ -943,6 +1045,52 @@ impl Value {
     }
 }
 
+fn resource_visible_for(
+    resource: &crate::definition::ResourceDef,
+    path: &Path,
+    active: usize,
+    seats: usize,
+    perspective: Perspective,
+) -> bool {
+    if resource.visibility == AstVisibility::Public {
+        return true;
+    }
+    let owner = match (path.root, resource.per) {
+        (PathRoot::Game, Per::Game) => None,
+        (PathRoot::SelfSeat, Per::Player) => Some(active),
+        (PathRoot::Other, Per::Player) => Some((active + 1) % seats),
+        _ => None,
+    };
+    match (owner, perspective) {
+        (_, Perspective::Admin) => true,
+        (Some(owner), Perspective::Seat(viewer)) => owner == viewer,
+        _ => false,
+    }
+}
+
+fn expr_visible(
+    expr: &Expr,
+    duel: &crate::definition::DuelDefinition,
+    active: usize,
+    seats: usize,
+    perspective: Perspective,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Int(_) | ExprKind::Bool(_) => true,
+        ExprKind::Path(path) => {
+            let Some(resource) = duel.resource(&path.name) else {
+                return false;
+            };
+            resource_visible_for(resource, path, active, seats, perspective)
+        }
+        ExprKind::Unary { expr, .. } => expr_visible(expr, duel, active, seats, perspective),
+        ExprKind::Binary { left, right, .. } => {
+            expr_visible(left, duel, active, seats, perspective)
+                && expr_visible(right, duel, active, seats, perspective)
+        }
+    }
+}
+
 fn clamp(resource: &crate::definition::ResourceDef, value: i64) -> i64 {
     let mut value = value;
     if let Some(min) = resource.min {
@@ -959,17 +1107,6 @@ fn event_visible(visibility: Visibility, perspective: Perspective) -> bool {
         (Visibility::Public, _) | (Visibility::Private(_), Perspective::Admin) => true,
         (Visibility::Private(_), Perspective::Spectator) => false,
         (Visibility::Private(owner), Perspective::Seat(viewer)) => owner == viewer,
-    }
-}
-
-fn visible(visibility: AstVisibility, perspective: Perspective, seat: usize) -> bool {
-    match visibility {
-        AstVisibility::Public => true,
-        AstVisibility::Private => match perspective {
-            Perspective::Admin => true,
-            Perspective::Spectator => false,
-            Perspective::Seat(viewer) => viewer == seat,
-        },
     }
 }
 

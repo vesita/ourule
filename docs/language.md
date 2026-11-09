@@ -211,7 +211,7 @@ oru run examples/moon-chess.oru --actions place:a1,place:b1,place:a2,place:b2,pl
 ## 暂不支持
 
 - 同时行动/阶段机；
-- 卡牌、队伍/角色与私密行动；
+- 卡牌、队伍/角色、同时行动；私有资源依赖的动作目前只允许 Admin 或拥有被引用私有资源的座位视角执行，Spectator 不会看到对应 offers 或执行结果；
 - 依赖解析、锁文件、注册表；
 - LSP、fmt、完整测试 DSL；
 - 自定义渲染。

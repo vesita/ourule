@@ -6,6 +6,15 @@ fn board_definition(source: &str) -> Definition {
     Definition::from_program(&program).expect("board definition should build")
 }
 
+fn step(
+    game: &mut Match,
+    action: &str,
+    target: Option<&str>,
+) -> Result<oru_core::Step, oru_core::RuleError> {
+    let actor = game.actor(game.active())?;
+    game.step(actor, action, target, Perspective::Admin)
+}
+
 const BOARD: &str = r#"
 game "井字棋"
 seats 2
@@ -33,9 +42,9 @@ fn board_family_builds_initial_grid_and_offers_cells() {
 fn place_uses_target_and_winning_line_ends_match() {
     let mut game = Match::start(board_definition(BOARD), None, 1).expect("start");
     for target in ["a1", "a2", "b1", "b2"] {
-        game.step("place", Some(target)).expect("place");
+        step(&mut game, "place", Some(target)).expect("place");
     }
-    let step = game.step("place", Some("c1")).expect("winning place");
+    let step = step(&mut game, "place", Some("c1")).expect("winning place");
     assert_eq!(game.outcome().unwrap().kind, OutcomeKind::Win);
     assert_eq!(game.outcome().unwrap().winner, Some(0));
     assert!(
@@ -49,10 +58,10 @@ fn place_uses_target_and_winning_line_ends_match() {
 #[test]
 fn occupied_or_missing_target_is_rejected_atomically() {
     let mut game = Match::start(board_definition(BOARD), None, 1).expect("start");
-    game.step("place", Some("a1")).expect("first place");
+    step(&mut game, "place", Some("a1")).expect("first place");
     let before = game.read(Perspective::Admin).unwrap();
-    assert!(game.step("place", Some("a1")).is_err());
-    assert!(game.step("place", None).is_err());
+    assert!(step(&mut game, "place", Some("a1")).is_err());
+    assert!(step(&mut game, "place", None).is_err());
     let after = game.read(Perspective::Admin).unwrap();
     assert_eq!(before.events, after.events);
     assert_eq!(before.board, after.board);
@@ -63,7 +72,7 @@ fn empty_board_cell_offers_are_legal_and_occupied_cells_are_removed() {
     let mut game = Match::start(board_definition(BOARD), None, 1).expect("start");
     let first = game.offers().unwrap();
     assert_eq!(first.len(), 9);
-    game.step("place", Some("b2")).expect("place");
+    step(&mut game, "place", Some("b2")).expect("place");
     let next = game.offers().unwrap();
     assert_eq!(next.len(), 8);
     assert!(!next.iter().any(|offer| {
@@ -79,7 +88,7 @@ fn line_length_supports_short_diagonal_windows() {
     let source = BOARD.replace("line 3", "line 2");
     let mut game = Match::start(board_definition(&source), None, 1).expect("start");
     for (action, target) in [("place", "a1"), ("place", "c1"), ("place", "b2")] {
-        game.step(action, Some(target)).expect("place");
+        step(&mut game, action, Some(target)).expect("place");
     }
     assert_eq!(game.outcome().unwrap().winner, Some(0));
 }
@@ -89,7 +98,7 @@ fn full_board_draws_without_line() {
     let mut game = Match::start(board_definition(BOARD), None, 1).expect("start");
     // X O X / O X X / O X O：满盘但没有一条三连线。
     for target in ["a1", "b1", "c1", "a2", "b2", "a3", "c2", "c3", "b3"] {
-        game.step("place", Some(target)).expect("place");
+        step(&mut game, "place", Some(target)).expect("place");
     }
     let outcome = game.outcome().expect("draw");
     assert_eq!(outcome.kind, OutcomeKind::Draw);
