@@ -19,7 +19,7 @@ Presentation    ReadModel + ViewSpec → 文本 / SVG / PNG
 - `Definition` 只保留游戏名、座位数、回合上限和 `FamilyDefinition`；duel 专属 resources/actions/triggers/wins 放在 `DuelDefinition`，board 参数放在 `BoardDefinition`；
 - Kernel 通过封闭 `FamilyDefinition/FamilyState` 表达具体 family；通用 Match 回合壳只做游标、事件、Outcome、透视投影；
 - `ActionOffer` 与 `step` 使用通用 `ActionTarget`，目标细节属于 family；duel 无 target，board 的 place 使用 cell id；`step` 必须传入由当前 Match 铸造、绑定 active seat/turn 的 `ActorSeat`；
-- `ReadModel.offers` 按 perspective 投影：条件引用 private resource 时，只对可见该资源的座位/Admin 计算和返回 offer；Spectator 不能经 offers 或 `step` 结果探测 private 条件；private game resource 对普通 Seat/Spectator 隐藏，事件 owner 使用不可映射到玩家的私有 sentinel；
+- `ReadModel.offers` 按 perspective 投影：条件引用 private resource 时，只对可见该资源的座位/Admin 计算和返回 offer；Spectator 不能经 offers 或 `step` 结果探测 private 条件；private game resource 对普通 Seat/Spectator 隐藏，事件 owner 使用不可授权给普通座位的 sentinel；
 - family 不拥有换人/判和/回合推进；
 - Presentation 不读原始 Match；
 - Session 不写规则；
@@ -60,7 +60,7 @@ MatchEnded
 
 - **M0（已完成）**：`.oru` 词法/语法/AST/检查器 + `Oru.toml` + `oru new/init/check`。
 - **M1（已完成）**：Definition/Match/Kernel，事件模型，顺序行动，duel 解释器，`oru run`。
-- **M2（当前/已落地）**：FamilyDefinition/FamilyState、ActionTarget、board 解释器；共享 `complete_action` 处理 TurnEnded/上限/游标，两个 family 共用同一收尾路径。
+- **M2（当前/已落地）**：FamilyDefinition/FamilyState、ActionTarget、board 解释器、ActorSeat capability 与按 perspective 的 private offers/events/resource projection；共享 `complete_action` 处理 TurnEnded/上限/游标。
 - **M2.5**：事件回放、`oru test` 雏形、定义 hash/state version。
 - **M3**：card family、阶段机、同时行动；队伍/角色与私密行动。
 - **M4**：`oru fmt`、黄金回放、LSP。
